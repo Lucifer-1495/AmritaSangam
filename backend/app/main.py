@@ -37,7 +37,7 @@ async def lifespan(app: FastAPI):
         client.close()
 
 
-app = FastAPI(title="CampusSphere API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="my AMRITA API", version="1.0.0", lifespan=lifespan)
 app.state.db = None
 app.state.mongo_client = None
 
@@ -107,7 +107,7 @@ async def unexpected_error_handler(request: Request, error: Exception):
 
 @app.get("/")
 def root():
-    return {"name": "CampusSphere API", "health": "/api/health"}
+    return {"name": "my AMRITA API", "health": "/api/health"}
 
 
 app.include_router(auth.router, prefix="/api")

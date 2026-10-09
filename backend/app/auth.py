@@ -110,7 +110,7 @@ def profile_for_auth_user(database, auth_user: dict):
     if profile is None:
         raise HTTPException(
             status_code=403,
-            detail="This account has not been issued by ICTS. Ask ICTS to create your CampusSphere account.",
+            detail="This account has not been issued by ICTS. Ask ICTS to create your my AMRITA account.",
         )
     if is_icts and profile.get("role") != Role.ICTS.value:
         profiles.update_one({"_id": profile["_id"]}, {"$set": {"role": Role.ICTS.value}})

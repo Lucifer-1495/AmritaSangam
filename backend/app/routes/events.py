@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response
@@ -31,6 +31,31 @@ from ..services.media import validate_image_data_url
 router = APIRouter()
 
 
+def find_venue_conflict(db, venue_id, start, end, exclude_event_id=None):
+    query = {
+        "venueId": venue_id,
+        "status": {"$nin": ["draft", "rejected", "cancelled"]},
+        "eventDate": {"$lt": end},
+    }
+    if exclude_event_id:
+        query["_id"] = {"$ne": exclude_event_id}
+    for event in collection(db, "events").find(query):
+        event_start = event["eventDate"]
+        # Legacy events have no end time; reserve a one-hour slot for them.
+        event_end = event.get("endDate") or event_start + timedelta(hours=1)
+        if event_start < end and event_end > start:
+            return event
+    return None
+
+
+def event_time_range(start_value, end_value):
+    start = parse_date(start_value, "Enter a valid event start time.")
+    end = parse_date(end_value, "Enter a valid event end time.")
+    if end <= start:
+        raise HTTPException(status_code=400, detail="Event end time must be after its start time.")
+    return start, end
+
+
 @router.get("/events/manage")
 def manage_events(request: Request, profile=Depends(current_profile)):
     db = request.app.state.db
@@ -46,10 +71,24 @@ def manage_events(request: Request, profile=Depends(current_profile)):
     return [serialize_document(event) for event in events]
 
 
+@router.get("/venues/availability")
+def venue_availability(request: Request, eventDate: str, endDate: str, profile=Depends(current_profile)):
+    start, end = event_time_range(eventDate, endDate)
+    venues = collection(request.app.state.db, "venues").find({"isAvailable": True}).sort("name", 1)
+    return [
+        {
+            **serialize_document(venue),
+            "available": find_venue_conflict(request.app.state.db, venue["_id"], start, end) is None,
+        }
+        for venue in venues
+    ]
+
+
 @router.post("/events", status_code=201)
 def create_event(request: Request, body: dict, profile=Depends(current_profile)):
-    require_fields(body, ["title", "eventDate", "clubId"])
+    require_fields(body, ["title", "eventDate", "endDate", "clubId", "venueId"])
     db = request.app.state.db
+    start, end = event_time_range(body["eventDate"], body["endDate"])
     club_id = as_oid(body["clubId"], "clubId")
     club = collection(db, "clubs").find_one({"_id": club_id})
     if not club:
@@ -61,13 +100,16 @@ def create_event(request: Request, body: dict, profile=Depends(current_profile))
         raise HTTPException(status_code=403, detail="Only this club’s president or executive can propose an event.")
     if body.get("eventType") and body["eventType"] != club.get("clubType"):
         raise HTTPException(status_code=400, detail=f"This club can only host {club.get('clubType', '').replace('_', ' ')} events.")
-    venue_id = as_oid(body["venueId"], "venueId") if body.get("venueId") else None
-    if venue_id and not collection(db, "venues").find_one({"_id": venue_id, "isAvailable": True}, {"_id": 1}):
+    venue_id = as_oid(body["venueId"], "venueId")
+    if not collection(db, "venues").find_one({"_id": venue_id, "isAvailable": True}, {"_id": 1}):
         raise HTTPException(status_code=400, detail="Choose an available venue.")
+    if find_venue_conflict(db, venue_id, start, end):
+        raise HTTPException(status_code=409, detail="That venue is already occupied during the selected time.")
     values = {
         "title": body["title"],
         "description": body.get("description", ""),
-        "eventDate": parse_date(body["eventDate"]),
+        "eventDate": start,
+        "endDate": end,
         "clubId": club_id,
         "eventType": club.get("clubType", "non_technical"),
         "capacity": parse_number(body.get("capacity", 100), "Capacity", 1),
@@ -77,8 +119,7 @@ def create_event(request: Request, body: dict, profile=Depends(current_profile))
     }
     if "posterUrl" in body:
         values["posterUrl"] = validate_image_data_url(body["posterUrl"], "Event poster", 1_500_000)
-    if venue_id:
-        values["venueId"] = venue_id
+    values["venueId"] = venue_id
     return insert(db, "events", values)
 
 
@@ -105,11 +146,19 @@ def edit_event(request: Request, identity: str, body: dict, profile=Depends(curr
         updates["posterUrl"] = validate_image_data_url(body["posterUrl"], "Event poster", 1_500_000)
     if "eventDate" in body:
         updates["eventDate"] = parse_date(body["eventDate"])
+    if "endDate" in body:
+        updates["endDate"] = parse_date(body["endDate"])
     if "venueId" in body:
         updates["venueId"] = as_oid(body["venueId"], "venueId") if body["venueId"] else None
     venue_id = updates.get("venueId", event.get("venueId"))
     if venue_id and not collection(db, "venues").find_one({"_id": venue_id, "isAvailable": True}, {"_id": 1}):
         raise HTTPException(status_code=400, detail="Choose an available venue.")
+    start = updates.get("eventDate", event["eventDate"])
+    end = updates.get("endDate", event.get("endDate") or start + timedelta(hours=1))
+    if end <= start:
+        raise HTTPException(status_code=400, detail="Event end time must be after its start time.")
+    if venue_id and find_venue_conflict(db, venue_id, start, end, event["_id"]):
+        raise HTTPException(status_code=409, detail="That venue is already occupied during the selected time.")
     updates.update({
         "status": "draft",
         "rejectionFeedback": "",

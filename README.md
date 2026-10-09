@@ -1,6 +1,6 @@
-# CampusSphere
+# my AMRITA
 
-CampusSphere is a college-club management portal. The project is organized into `frontend/` (React/Vite) and `backend/` (FastAPI). FastAPI manages Supabase Auth sessions with secure cookies; MongoDB stores profiles and campus records.
+my AMRITA is a college-club management portal. The project is organized into `frontend/` (React/Vite) and `backend/` (FastAPI). FastAPI manages Supabase Auth sessions with secure cookies; MongoDB stores profiles and campus records.
 
 ## Run locally
 
@@ -38,7 +38,7 @@ Use Python 3.10 or newer and Node.js 20.19+.
 
 The browser sends sign-in and password-change requests to FastAPI over HTTPS. Supabase Auth validates sign-in credentials and manages passwords. After a successful sign-in, FastAPI creates a random, revocable session in MongoDB and sends its opaque identifier in a `Secure`, `HttpOnly`, `SameSite` cookie; only a hash of that identifier is stored in MongoDB. Normal API requests look up the session and profile in MongoDB and do not call Supabase. Sessions expire after 30 days, and MongoDB removes expired session records. Write requests must have the configured `CLIENT_ORIGIN`. Sign-out revokes the MongoDB session and clears the cookie.
 
-Supabase Auth hashes account passwords with bcrypt. CampusSphere never stores plaintext passwords or password hashes in MongoDB; ICTS-issued passwords are sent directly to Supabase Auth over HTTPS.
+Supabase Auth hashes account passwords with bcrypt. my AMRITA never stores plaintext passwords or password hashes in MongoDB; ICTS-issued passwords are sent directly to Supabase Auth over HTTPS.
 
 1. Set `ICTS_EMAIL` in `backend/.env`. In Supabase Dashboard → **Authentication → Users**, create the ICTS login with that email. Disable public sign-ups so accounts are issued only by ICTS.
 2. Sign in as ICTS and use **Account desk** to create:
@@ -74,7 +74,13 @@ MongoDB Atlas `mongodb+srv://` connections use TLS by default. Back up a product
 
 ## Club logos and event posters
 
-Admins can upload PNG logos when creating or editing clubs. Club presidents can add a PNG, JPEG, or WebP poster when proposing an event. The app resizes images before saving them to the existing MongoDB club/event records; uploads are validated and size-limited by the API. Events without an uploaded poster still show a generated CampusSphere poster, and selecting one opens its details in a dialog.
+Admins can upload PNG logos when creating or editing clubs and configure the club-specific domains shown on membership applications. Applicants provide their year of study, phone number, selected domain, and reason; reviewers can see these details alongside the student's issued name, register number, and department.
+
+Club presidents can add a PNG, JPEG, or WebP poster when proposing an event. Event proposals require a hosting club, venue, start time, and end time. The app shows occupied venues for overlapping time ranges and the API checks availability again when saving. The app resizes images before saving them to the existing MongoDB club/event records; uploads are validated and size-limited by the API. Events without an uploaded poster still show a generated my AMRITA poster. The Overview page automatically rotates through upcoming events in a split hero carousel, with the poster on the left and event details on the right. Arrow and dot controls allow manual navigation; hovering or focusing the carousel pauses autoplay. Selecting an event opens an animated details carousel, where attendees can register after confirming.
+
+## Appearance
+
+The sign-in screen, student/staff dashboard, and ICTS Account Desk support light and dark themes. Use the sun/moon button in the top bar (or on the sign-in screen); the selection is saved in the browser for the next visit.
 
 ## TLS
 

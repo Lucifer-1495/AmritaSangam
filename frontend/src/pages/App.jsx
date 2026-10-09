@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ArrowDownLeft, ArrowRight, ArrowUpRight, BarChart3, Bell, CalendarDays, Check, ChevronDown,
+  ArrowDownLeft, ArrowRight, ArrowUpRight, BarChart3, Bell, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight,
   CircleHelp, Clock3, Compass, CreditCard, FolderKanban, Gauge, HandCoins,
-  Laptop, LogOut, Menu, Megaphone, Plus, Search, ShieldCheck, Sparkles, Users,
+  Laptop, LogOut, Menu, Megaphone, Moon, Plus, Search, ShieldCheck, Sparkles, Sun, Users,
   WalletCards, Download, X, UserRound, KeyRound, Camera, Trash2 } from 'lucide-react';
 import { api, apiDownload } from '../services/api';
 import PortalBrand from '../components/PortalBrand';
@@ -119,7 +119,28 @@ function clearLegacySupabaseSessions() {
   }
 }
 
-function AuthScreen({ onAuthenticated }) {
+function loadTheme() {
+  try {
+    return window.localStorage.getItem('campussphere-theme') === 'dark' ? 'dark' : 'light';
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'SecurityError') return 'light';
+    throw error;
+  }
+}
+
+function ThemeToggle({ theme, onToggle, className = '' }) {
+  const isDark = theme === 'dark';
+  const Icon = isDark ? Sun : Moon;
+  return <button
+    className={`icon-button theme-toggle ${className}`.trim()}
+    type="button"
+    onClick={onToggle}
+    aria-label={`Switch to ${isDark ? 'light' : 'dark'} mode`}
+    title={`Switch to ${isDark ? 'light' : 'dark'} mode`}
+  ><Icon size={18} /></button>;
+}
+
+function AuthScreen({ onAuthenticated, theme, onToggleTheme }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -142,12 +163,13 @@ function AuthScreen({ onAuthenticated }) {
 
   return (
     <main className="auth-shell">
+      <ThemeToggle theme={theme} onToggle={onToggleTheme} className="auth-theme-toggle" />
       <section className="auth-story">
         <PortalBrand className="auth-brand" />
         <div className="story-copy">
-          <span className="eyebrow eyebrow-light">YOUR CAMPUS, IN SYNC</span>
-          <h1>Make room for<br /><em>what moves you.</em></h1>
+          <h1>YOUR WINDOW TO CAMPUS LIFE</h1>
           <p>Find your people, show up for the moments that matter, and make campus life your own.</p>
+          <span className="auth-story-divider" />
         </div>
         <div className="story-note">
           <div className="avatar-stack"><span>AK</span><span>RM</span><span>JD</span><b>+</b></div>
@@ -159,8 +181,8 @@ function AuthScreen({ onAuthenticated }) {
       <section className="auth-form-side">
         <div className="auth-form-wrap">
           <PortalBrand className="mobile-brand" />
-          <span className="eyebrow">WELCOME BACK</span>
-          <h2>Good to see you.</h2>
+          <div className="login-heading"><h2>LOGIN</h2><span aria-hidden="true"><ArrowRight size={21} /></span></div>
+          <p className="eyebrow">WELCOME BACK</p>
           <p className="auth-subtitle">Sign in to your campus portal. Your college account gives you access to clubs, events, and student services.</p>
 
           <form className="auth-form" onSubmit={submit}>
@@ -187,11 +209,35 @@ function AuthScreen({ onAuthenticated }) {
   );
 }
 
-function Modal({ type, clubs, profiles, venues, selectedClub, onClose, onSubmit, busy }) {
+function Modal({ type, clubs, profiles, venues, selectedClub, profile, onClose, onSubmit, busy }) {
   const [clubId, setClubId] = useState(selectedClub?._id || clubs[0]?._id || '');
   const [formError, setFormError] = useState('');
   const [logoPreview, setLogoPreview] = useState(selectedClub?.logoUrl || '');
   const [posterPreview, setPosterPreview] = useState('');
+  const [eventStart, setEventStart] = useState('');
+  const [eventEnd, setEventEnd] = useState('');
+  const [venueAvailability, setVenueAvailability] = useState([]);
+  const [availabilityError, setAvailabilityError] = useState('');
+  const [checkingAvailability, setCheckingAvailability] = useState(false);
+  const applicationClub = clubs.find((club) => club._id === clubId);
+
+  useEffect(() => {
+    if (type !== 'event' || !eventStart || !eventEnd || new Date(eventEnd) <= new Date(eventStart)) {
+      setVenueAvailability([]);
+      setAvailabilityError('');
+      setCheckingAvailability(false);
+      return undefined;
+    }
+    let active = true;
+    setVenueAvailability([]);
+    setCheckingAvailability(true);
+    setAvailabilityError('');
+    api(`/venues/availability?eventDate=${encodeURIComponent(new Date(eventStart).toISOString())}&endDate=${encodeURIComponent(new Date(eventEnd).toISOString())}`)
+      .then((result) => { if (active) setVenueAvailability(result); })
+      .catch((error) => { if (active) setAvailabilityError(error.message); })
+      .finally(() => { if (active) setCheckingAvailability(false); });
+    return () => { active = false; };
+  }, [eventEnd, eventStart, type]);
 
   const submit = async (event) => {
     event.preventDefault();
@@ -199,7 +245,11 @@ function Modal({ type, clubs, profiles, venues, selectedClub, onClose, onSubmit,
     const values = Object.fromEntries(new FormData(event.currentTarget).entries());
     try {
       if (isClubForm) values.logoUrl = logoPreview;
-      if (type === 'event') values.posterUrl = posterPreview;
+      if (type === 'event') {
+        values.posterUrl = posterPreview;
+        values.eventDate = new Date(eventStart).toISOString();
+        values.endDate = new Date(eventEnd).toISOString();
+      }
       const result = await onSubmit(type, { ...values, clubId });
       if (result) setFormError(result);
     } catch (error) {
@@ -240,12 +290,12 @@ function Modal({ type, clubs, profiles, venues, selectedClub, onClose, onSubmit,
     <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
         <div className="modal-heading">
-          <div><span className="eyebrow">CAMPUSSPHERE</span><h2 id="modal-title">{modalTitles[type]}</h2></div>
+          <div><span className="eyebrow">MY AMRITA</span><h2 id="modal-title">{modalTitles[type]}</h2></div>
           <button className="icon-button" onClick={onClose} aria-label="Close dialog"><X size={19} /></button>
         </div>
         <form className="modal-form" onSubmit={submit}>
           {type === 'apply' && <p className="modal-intro">Tell the club a little about what brings you here.</p>}
-          {type !== 'club' && type !== 'editClub' && (
+          {type !== 'club' && type !== 'editClub' && type !== 'event' && (
             <label className="field-label">Club
               <select name="clubId" value={clubId} onChange={(event) => setClubId(event.target.value)} required>
                 {clubs.map((club) => <option value={club._id} key={club._id}>{club.name}{club.clubType ? ` · ${club.clubType.replace('_', ' ')}` : ''}</option>)}
@@ -255,6 +305,7 @@ function Modal({ type, clubs, profiles, venues, selectedClub, onClose, onSubmit,
           {isClubForm && <>
             <label className="field-label">Club name<input name="name" required maxLength={100} defaultValue={selectedClub?.name} placeholder="e.g. Design Society" /></label>
             <label className="field-label">Category<input name="category" defaultValue={selectedClub?.category} placeholder="Arts, technology, community…" /></label>
+            <label className="field-label">Application domains<textarea name="domains" required maxLength={1200} rows="3" defaultValue={selectedClub?.domains?.join('\n') || 'General'} placeholder={'For example:\nWeb development\nDesign\nEvents'} /><small>Enter one domain per line. Students choose from these when applying.</small></label>
             <label className="field-label">About the club<textarea name="description" required maxLength={2000} rows="3" defaultValue={selectedClub?.description} placeholder="What brings your community together?" /></label>
             <label className="field-label">Club logo (PNG, optional)<input type="file" accept="image/png" onChange={(event) => pickImage(event, 'logo')} /></label>
             {logoPreview && <div className="media-preview"><img src={logoPreview} alt="Club logo preview" /><button type="button" className="text-link" onClick={() => setLogoPreview('')}>Remove logo</button></div>}
@@ -271,19 +322,34 @@ function Modal({ type, clubs, profiles, venues, selectedClub, onClose, onSubmit,
             <label className="field-label">Amount<input name="amount" type="number" min="1" step="1" required placeholder="Amount in INR" /></label>
             <label className="field-label">Description<input name="description" required maxLength={1000} placeholder="What was this for?" /></label>
           </>}
-                {type === 'apply' && <>
-                  <label className="field-label">What would you like to apply for?<select name="requestedPosition"><option value="member">Club membership</option><option value="executive">Executive consideration</option></select></label>
-                  <label className="field-label">Why would you like to join?<textarea name="reason" required minLength={3} maxLength={2000} rows="4" placeholder="Share what you're curious about…" /></label>
-                </>}
+          {type === 'apply' && <>
+            <div className="application-profile-grid">
+              <label className="field-label">Name<input value={profile.name || ''} readOnly /></label>
+              <label className="field-label">Roll number<input value={profile.registerNumber || 'Not issued'} readOnly /></label>
+              <label className="field-label">Department<input value={profile.department || 'Not provided'} readOnly /></label>
+              <label className="field-label">Year of study<select name="yearOfStudy" defaultValue="" required><option value="" disabled>Select year</option><option value="1st">1st year</option><option value="2nd">2nd year</option><option value="3rd">3rd year</option><option value="4th">4th year</option><option value="Other">Other</option></select></label>
+              <label className="field-label">Phone number<input name="applicantPhone" type="tel" defaultValue={profile.phone || ''} maxLength={20} required autoComplete="tel" /></label>
+              <label className="field-label">Domain<select name="domain" required defaultValue={applicationClub?.domains?.[0] || 'General'}>{(applicationClub?.domains?.length ? applicationClub.domains : ['General']).map((domain) => <option key={domain} value={domain}>{domain}</option>)}</select></label>
+            </div>
+            <label className="field-label">What would you like to apply for?<select name="requestedPosition"><option value="member">Club membership</option><option value="executive">Executive consideration</option></select></label>
+            <label className="field-label">Why would you like to join?<textarea name="reason" required minLength={3} maxLength={2000} rows="4" placeholder="Share what you're curious about…" /></label>
+          </>}
           {type === 'event' && <>
             <p className="modal-intro">Event type follows the selected club: {clubs.find((club) => club._id === clubId)?.clubType?.replace('_', ' ') || 'club type'}.</p>
+            <label className="field-label">Club hosting this event<select name="clubId" value={clubId} onChange={(event) => setClubId(event.target.value)} required>{clubs.map((club) => <option key={club._id} value={club._id}>{club.name}</option>)}</select></label>
             <label className="field-label">Event name<input name="title" required maxLength={150} placeholder="Give your event a name" /></label>
             <label className="field-label">What is it about?<textarea name="description" maxLength={3000} rows="3" placeholder="A few details for people who might come along…" /></label>
             <label className="field-label">Event poster (optional)<input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => pickImage(event, 'poster')} /></label>
             {posterPreview && <div className="media-preview media-preview-poster"><img src={posterPreview} alt="Event poster preview" /><button type="button" className="text-link" onClick={() => setPosterPreview('')}>Remove poster</button></div>}
-            <label className="field-label">Venue<select name="venueId"><option value="">Choose later</option>{venues.map((venue) => <option key={venue._id} value={venue._id}>{venue.name} · {venue.location}</option>)}</select></label>
+            <label className="field-label">Venue<select name="venueId" required defaultValue="" disabled={checkingAvailability}><option value="" disabled>{checkingAvailability ? 'Checking venue availability…' : 'Choose an available venue'}</option>{venues.map((venue) => {
+              const availability = venueAvailability.find((item) => item._id === venue._id);
+              return <option key={venue._id} value={venue._id} disabled={availability && !availability.available}>{venue.name} · {venue.location}{availability && !availability.available ? ' · Occupied' : ''}</option>;
+            })}</select></label>
+            {availabilityError && <div className="notice notice-error" role="alert">Could not check venue availability: {availabilityError} The server will check again when you submit.</div>}
+            {eventStart && eventEnd && new Date(eventEnd) <= new Date(eventStart) && <div className="notice notice-error" role="alert">The end time must be after the start time.</div>}
             <div className="form-row">
-              <label className="field-label">Date & time<input name="eventDate" type="datetime-local" required /></label>
+              <label className="field-label">Starts<input name="eventDate" type="datetime-local" required value={eventStart} onChange={(event) => setEventStart(event.target.value)} /></label>
+              <label className="field-label">Ends<input name="endDate" type="datetime-local" required min={eventStart || undefined} value={eventEnd} onChange={(event) => setEventEnd(event.target.value)} /></label>
               <label className="field-label">Capacity<input name="capacity" type="number" min="1" max="5000" defaultValue="100" required /></label>
             </div>
           </>}
@@ -307,7 +373,7 @@ function Modal({ type, clubs, profiles, venues, selectedClub, onClose, onSubmit,
           {formError && <div className="notice notice-error" role="alert">{formError}</div>}
           <div className="modal-actions">
             <button className="button button-quiet" type="button" onClick={onClose}>Cancel</button>
-            <button className="button button-primary" type="submit" disabled={busy || (!clubs.length && !isClubForm)}>
+            <button className="button button-primary" type="submit" disabled={busy || checkingAvailability || (!clubs.length && !isClubForm) || (type === 'event' && eventEnd && new Date(eventEnd) <= new Date(eventStart))}>
               {busy ? 'Saving…' : type === 'apply' ? 'Send application' : type === 'funding' ? 'Send request' : 'Save'}
               {!busy && <ArrowRight size={16} />}
             </button>
@@ -318,7 +384,118 @@ function Modal({ type, clubs, profiles, venues, selectedClub, onClose, onSubmit,
   );
 }
 
-function Dashboard({ profile, onLogout, onProfileUpdate }) {
+function OverviewEventCarousel({ events, onOpen }) {
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [pendingIndex, setPendingIndex] = useState(null);
+  const [direction, setDirection] = useState(1);
+  const [paused, setPaused] = useState(false);
+  const transitioning = useRef(false);
+  const transitionTimer = useRef(null);
+  const safeIndex = events.length ? activeIndex % events.length : 0;
+  const activeEvent = events[safeIndex];
+
+  const finishTransition = useCallback((targetIndex) => {
+    if (!transitioning.current || targetIndex === null) return;
+    transitioning.current = false;
+    window.clearTimeout(transitionTimer.current);
+    transitionTimer.current = null;
+    setActiveIndex(targetIndex);
+    setPendingIndex(null);
+  }, []);
+
+  const moveTo = useCallback((nextIndex) => {
+    if (transitioning.current || events.length < 2) return;
+    const normalizedIndex = (nextIndex + events.length) % events.length;
+    if (normalizedIndex === safeIndex) return;
+    transitioning.current = true;
+    setDirection(normalizedIndex > safeIndex || (safeIndex === events.length - 1 && normalizedIndex === 0) ? 1 : -1);
+    setPendingIndex(normalizedIndex);
+    transitionTimer.current = window.setTimeout(() => finishTransition(normalizedIndex), 650);
+  }, [events.length, finishTransition, safeIndex]);
+
+  useEffect(() => {
+    if (events.length < 2 || paused || pendingIndex !== null) return undefined;
+    const timer = window.setTimeout(() => moveTo(safeIndex + 1), 5000);
+    return () => window.clearTimeout(timer);
+  }, [events.length, moveTo, paused, pendingIndex, safeIndex]);
+
+  useEffect(() => () => window.clearTimeout(transitionTimer.current), []);
+
+  if (!activeEvent) return null;
+  const nextIndex = (safeIndex + 1) % events.length;
+  const previousIndex = (safeIndex - 1 + events.length) % events.length;
+  const firstIndex = direction < 0 && pendingIndex !== null ? pendingIndex : safeIndex;
+  const secondIndex = direction < 0 ? safeIndex : (pendingIndex ?? nextIndex);
+  const renderSlide = (event, index) => {
+    const start = event.eventDate ? new Date(event.eventDate) : null;
+    const end = event.endDate ? new Date(event.endDate) : null;
+    const validStart = start && !Number.isNaN(start.getTime());
+    const time = validStart
+      ? `${start.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}${end && !Number.isNaN(end.getTime()) ? ` – ${end.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}` : ''}`
+      : 'Time to be announced';
+    return <article className="overview-event-slide" key={event._id}>
+      <button className="overview-event-poster" type="button" onClick={() => onOpen(event)} aria-label={`Open ${event.title} details`}>
+        {event.posterUrl
+          ? <img src={event.posterUrl} alt={`${event.title} event poster`} />
+          : <span className="overview-event-poster-fallback"><CalendarDays size={34} /><small>{event.clubId?.name || 'Campus event'}</small><strong>{event.title}</strong></span>}
+        <span className="overview-event-poster-date">{formatDate(event.eventDate, { month: 'short', day: 'numeric' })}</span>
+      </button>
+      <div className="overview-event-copy">
+        <div className="overview-event-topline"><span className="banner-kicker"><Sparkles size={14} />UPCOMING CAMPUS EVENT</span><span className="overview-event-count">{index + 1} / {events.length}</span></div>
+        <span className="overview-event-club">{event.clubId?.name || 'Campus club'}</span>
+        <h2>{event.title}</h2>
+        <p className="overview-event-description">{event.description || 'Join your campus community for this upcoming event.'}</p>
+        <div className="overview-event-meta">
+          <span><CalendarDays size={16} /><span>{validStart ? formatDate(event.eventDate, { weekday: 'long', month: 'long', day: 'numeric' }) : 'Date to be announced'}<small>{time}</small></span></span>
+          {event.venueId?.name && <span><Compass size={16} /><span>{event.venueId.name}<small>{event.venueId.location || 'Campus venue'}</small></span></span>}
+        </div>
+        <div className="overview-event-bottom">
+          <button className="button button-light" type="button" onClick={() => onOpen(event)}>Event details <ArrowRight size={16} /></button>
+          {events.length > 1 && <div className="overview-event-controls" aria-label="Browse upcoming events">
+            <button className="icon-button" type="button" onClick={() => moveTo(previousIndex)} disabled={pendingIndex !== null} aria-label="Previous event"><ChevronLeft size={18} /></button>
+            <div className="overview-event-dots" aria-label={`Event ${safeIndex + 1} of ${events.length}`}>
+              {events.map((item, itemIndex) => <button
+                key={item._id}
+                className={`overview-event-dot ${itemIndex === safeIndex ? 'overview-event-dot-active' : ''}`}
+                type="button"
+                onClick={() => moveTo(itemIndex)}
+                disabled={pendingIndex !== null}
+                aria-label={`Show event ${itemIndex + 1}: ${item.title}`}
+                aria-current={itemIndex === safeIndex ? 'true' : undefined}
+              />)}
+            </div>
+            <button className="icon-button" type="button" onClick={() => moveTo(nextIndex)} disabled={pendingIndex !== null} aria-label="Next event"><ChevronRight size={18} /></button>
+          </div>}
+        </div>
+      </div>
+    </article>;
+  };
+  const firstSlide = direction < 0 && pendingIndex !== null ? events[firstIndex] : activeEvent;
+  const secondSlide = direction < 0 ? activeEvent : events[secondIndex];
+
+  return <section
+    className="overview-event-carousel"
+    aria-label="Upcoming campus events"
+    onMouseEnter={() => setPaused(true)}
+    onMouseLeave={() => setPaused(false)}
+    onFocus={() => setPaused(true)}
+    onBlur={(focusEvent) => {
+      if (!focusEvent.currentTarget.contains(focusEvent.relatedTarget)) setPaused(false);
+    }}
+  >
+    <div
+      className={`overview-event-track ${pendingIndex !== null ? `overview-event-track-${direction > 0 ? 'next' : 'previous'}` : 'overview-event-track-idle'}`}
+      onAnimationEnd={(animationEvent) => {
+        if (animationEvent.target === animationEvent.currentTarget && pendingIndex !== null) finishTransition(pendingIndex);
+      }}
+    >
+      {renderSlide(firstSlide, firstIndex)}
+      {pendingIndex !== null && renderSlide(secondSlide, secondIndex)}
+    </div>
+  </section>;
+}
+
+function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme }) {
   const [page, setPage] = useState('overview');
   const [data, setData] = useState(initialData);
   const [loading, setLoading] = useState(true);
@@ -434,6 +611,10 @@ function Dashboard({ profile, onLogout, onProfileUpdate }) {
   const currentPage = navigation.find((item) => item.id === page) || navigation[0];
   const filteredClubs = useMemo(() => data.clubs.filter((club) =>
     `${club.name} ${club.category} ${club.description}`.toLowerCase().includes(search.toLowerCase())), [data.clubs, search]);
+  const featuredEvents = useMemo(() => data.events
+    .filter((event) => event.status === 'approved' && new Date(event.eventDate) >= new Date())
+    .sort((first, second) => new Date(first.eventDate) - new Date(second.eventDate))
+    .slice(0, 8), [data.events]);
 
   const createRecord = async (type, values) => {
     setBusy(true);
@@ -562,7 +743,7 @@ function Dashboard({ profile, onLogout, onProfileUpdate }) {
     const url = URL.createObjectURL(file);
     const link = document.createElement('a');
     link.href = url;
-    link.download = 'campussphere-club-report.csv';
+    link.download = 'my-amrita-club-report.csv';
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -607,7 +788,7 @@ function Dashboard({ profile, onLogout, onProfileUpdate }) {
     <div className={`app-shell shell-${track}`}>
       <aside className={`sidebar ${menuOpen ? 'sidebar-open' : ''}`}>
         <a className="brand" href="#overview" onClick={(event) => { event.preventDefault(); navigate('overview'); }}>
-          <span className="brand-mark"><Sparkles size={18} /></span><span>Campus<span className="brand-light">Sphere</span></span>
+          <span className="brand-wordmark"><span>my</span> AMRITA</span>
         </a>
         <div className="campus-label"><span className="campus-dot" />{{
           'student-affairs': 'CAMPUS ADMINISTRATION',
@@ -639,9 +820,10 @@ function Dashboard({ profile, onLogout, onProfileUpdate }) {
       <main className="main-panel">
         <header className="topbar">
           <button className="mobile-menu icon-button" aria-label="Open navigation" onClick={() => setMenuOpen(!menuOpen)}><Menu size={21} /></button>
-          <div className="breadcrumbs"><span>CampusSphere</span><span className="crumb-slash">/</span><strong>{currentPage.label}</strong></div>
+          <div className="breadcrumbs"><span>my AMRITA</span><span className="crumb-slash">/</span><strong>{currentPage.label}</strong></div>
           <div className="topbar-right">
             <span className="role-pill">{profileTrackLabel(profile, track)}</span>
+            <ThemeToggle theme={theme} onToggle={onToggleTheme} />
             <button className="button button-outline topbar-logout" onClick={onLogout}><LogOut size={15} /> Log out</button>
             <button className="icon-button notification-button" aria-label="Your notifications" onClick={() => navigate('announcements')}><Bell size={18} /><i /></button>
             <button className="topbar-avatar" onClick={() => navigate('profile')} title="My profile"><Avatar person={profile} className="avatar-inner" /><ChevronDown size={13} /></button>
@@ -675,19 +857,21 @@ function Dashboard({ profile, onLogout, onProfileUpdate }) {
 
           {!problem && page === 'overview' && (
             <>
-              <section className="welcome-banner">
-                <div className="welcome-copy"><span className="banner-kicker"><Sparkles size={14} />{{
-                  'student-affairs': 'CAMPUS AT A GLANCE',
-                  mentor: 'YOUR MENTORSHIP, IN MOTION',
-                  president: 'YOU LEAD THIS CLUB',
-                  'office-bearer': 'A GOOD DAY TO LEAD',
-                  executive: 'MAKE YOUR NEXT IDEA HAPPEN',
-                  student: 'A GOOD DAY TO GET INVOLVED',
-                }[track]}</span><h2>{track === 'president' ? <>Your club,<br />your vision.</> : copyTrack === 'student-affairs' ? <>Good clubs make<br />a great campus.</> : copyTrack === 'mentor' ? <>Guide the people<br />who lead.</> : copyTrack === 'office-bearer' ? <>Big ideas start<br />with showing up.</> : copyTrack === 'executive' ? <>Plan together.<br />Make it happen.</> : <>Big ideas start<br />with showing up.</>}</h2><p>{track === 'president' ? 'Recruit your executives, get events approved, and keep your mentor in the loop.' : copyTrack === 'student-affairs' ? 'Build strong club foundations and keep every community supported.' : copyTrack === 'mentor' ? 'Your guidance helps student leaders turn plans into progress.' : copyTrack === 'office-bearer' ? 'Welcome new members and help your club make its mark.' : copyTrack === 'executive' ? 'Your next event starts with one good idea.' : 'Meet a club, save a seat, or start something new.'}</p>
-                  <button className="button button-light" onClick={() => navigate(track === 'president' ? 'applications' : copyTrack === 'student-affairs' ? 'clubs' : copyTrack === 'mentor' ? 'members' : copyTrack === 'office-bearer' ? 'applications' : copyTrack === 'executive' ? 'events' : 'clubs')}>{track === 'president' ? 'Recruit executives' : copyTrack === 'student-affairs' ? 'Manage clubs' : copyTrack === 'mentor' ? 'Support club leaders' : copyTrack === 'office-bearer' ? 'Review applications' : copyTrack === 'executive' ? 'Explore events' : 'Find your community'} <ArrowRight size={16} /></button>
-                </div>
-                <div className="banner-graphic" aria-hidden="true"><span className="graphic-ring ring-a" /><span className="graphic-ring ring-b" /><span className="graphic-star">✳</span><span className="graphic-caption">MAKE<br />IT YOURS</span><span className="graphic-orbit"><i /><i /><i /></span></div>
-              </section>
+              {featuredEvents.length
+                ? <OverviewEventCarousel events={featuredEvents} onOpen={setSelectedEvent} />
+                : <section className="welcome-banner">
+                  <div className="welcome-copy"><span className="banner-kicker"><Sparkles size={14} />{{
+                    'student-affairs': 'CAMPUS AT A GLANCE',
+                    mentor: 'YOUR MENTORSHIP, IN MOTION',
+                    president: 'YOU LEAD THIS CLUB',
+                    'office-bearer': 'A GOOD DAY TO LEAD',
+                    executive: 'MAKE YOUR NEXT IDEA HAPPEN',
+                    student: 'A GOOD DAY TO GET INVOLVED',
+                  }[track]}</span><h2>{track === 'president' ? <>Your club,<br />your vision.</> : copyTrack === 'student-affairs' ? <>Good clubs make<br />a great campus.</> : copyTrack === 'mentor' ? <>Guide the people<br />who lead.</> : copyTrack === 'office-bearer' ? <>Big ideas start<br />with showing up.</> : copyTrack === 'executive' ? <>Plan together.<br />Make it happen.</> : <>Big ideas start<br />with showing up.</>}</h2><p>{track === 'president' ? 'Recruit your executives, get events approved, and keep your mentor in the loop.' : copyTrack === 'student-affairs' ? 'Build strong club foundations and keep every community supported.' : copyTrack === 'mentor' ? 'Your guidance helps student leaders turn plans into progress.' : copyTrack === 'office-bearer' ? 'Welcome new members and help your club make its mark.' : copyTrack === 'executive' ? 'Your next event starts with one good idea.' : 'Meet a club, explore events, or start something new.'}</p>
+                    <button className="button button-light" onClick={() => navigate(track === 'president' ? 'applications' : copyTrack === 'student-affairs' ? 'clubs' : copyTrack === 'mentor' ? 'members' : copyTrack === 'office-bearer' ? 'applications' : copyTrack === 'executive' ? 'events' : 'clubs')}>{track === 'president' ? 'Recruit executives' : copyTrack === 'student-affairs' ? 'Manage clubs' : copyTrack === 'mentor' ? 'Support club leaders' : copyTrack === 'office-bearer' ? 'Review applications' : track === 'executive' ? 'Explore events' : 'Find your community'} <ArrowRight size={16} /></button>
+                  </div>
+                  <div className="banner-graphic" aria-hidden="true"><span className="graphic-ring ring-a" /><span className="graphic-ring ring-b" /><span className="graphic-star">✳</span><span className="graphic-caption">MAKE<br />IT YOURS</span><span className="graphic-orbit"><i /><i /><i /></span></div>
+                </section>}
 
               <section className="stat-grid">
                 <StatCard icon={Compass} label="Clubs to explore" value={data.summary.clubs} foot="Find your corner of campus" tone="lavender" />
@@ -758,6 +942,7 @@ function Dashboard({ profile, onLogout, onProfileUpdate }) {
           {!problem && page === 'events' && (
             <div className="surface-card list-surface">
               <SectionHeading title="Make a date with campus" subtitle="Good company is already on the calendar." />
+              <div className="events-grid">
               {data.events.map((event, index) => {
                 const clubId = event.clubId?._id || event.clubId;
                 const eventPosition = data.memberships.find((member) => (member.clubId?._id || member.clubId) === clubId);
@@ -768,7 +953,7 @@ function Dashboard({ profile, onLogout, onProfileUpdate }) {
                   ? isMentor
                   : event.status === 'student_affairs_pending' && role === 'college_admin';
                 return <div key={event._id} className="event-workflow">
-                  <EventRow event={event} index={index} registered={registrationByEvent.has(event._id)} role={role} canReview={canReviewEvent} isPresident={isPresident} onDetails={() => setSelectedEvent(event)} onRegister={() => perform(() => api('/registrations', { method: 'POST', body: { eventId: event._id } }), 'You’re on the list. See you there!')} onCancel={() => perform(() => api(`/registrations/${registrationByEvent.get(event._id)._id}`, { method: 'DELETE' }), 'Your seat has been released.')} onReview={(status) => review('event', event, status)} onResubmit={() => perform(() => api(`/events/${event._id}/submit`, { method: 'PATCH' }), 'Event resubmitted to the club mentor.')} />
+                  <EventRow event={event} index={index} canReview={canReviewEvent} isPresident={isPresident} onDetails={() => setSelectedEvent(event)} onReview={(status) => review('event', event, status)} onResubmit={() => perform(() => api(`/events/${event._id}/submit`, { method: 'PATCH' }), 'Event resubmitted to the club mentor.')} />
                   {isEventLeader && event.status === 'approved' && <AttendancePanel event={event} onError={setToast} />}
                   {isPresident && event.status === 'approved' && new Date(event.eventDate) <= new Date()
                     && !data.eventReports.some((report) => (report.eventId?._id || report.eventId) === event._id)
@@ -776,6 +961,7 @@ function Dashboard({ profile, onLogout, onProfileUpdate }) {
                 </div>;
               })}
               {!data.events.length && <EmptyState title="The calendar is taking a breath" text="Approved campus events will show up here." />}
+              </div>
             </div>
           )}
 
@@ -962,12 +1148,25 @@ function Dashboard({ profile, onLogout, onProfileUpdate }) {
       </main>
 
       {toast && <div className="toast" role="status"><span><Check size={15} /></span>{toast}<button onClick={() => setToast('')} aria-label="Dismiss"><X size={15} /></button></div>}
-      {selectedEvent && <EventDetailsDialog event={selectedEvent} onClose={() => setSelectedEvent(null)} />}
+      {selectedEvent && <EventDetailsDialog
+        event={selectedEvent}
+        events={data.events}
+        registrations={registrationByEvent}
+        onNavigate={setSelectedEvent}
+        onClose={() => setSelectedEvent(null)}
+        canRegister={role !== 'college_admin'}
+        onRegister={(event) => perform(() => api('/registrations', { method: 'POST', body: { eventId: event._id } }), 'You’re registered for this event.')}
+        onCancel={(event) => {
+          const registration = registrationByEvent.get(event._id);
+          return registration && perform(() => api(`/registrations/${registration._id}`, { method: 'DELETE' }), 'Your registration has been cancelled.');
+        }}
+      />}
       {modal && <Modal
         type={modal}
         clubs={modal === 'apply' ? data.clubs : modal === 'event' ? eventClubList : memberClubList}
         profiles={data.profiles}
         venues={data.venues}
+        profile={profile}
         selectedClub={modal === 'club' ? null : modal === 'apply' || modal === 'editClub' ? selectedClub : modal === 'event' ? eventClubList[0] : memberClubList[0]}
         busy={busy}
         onClose={() => setModal('')}
@@ -1066,7 +1265,7 @@ function PasswordCard() {
 
   return (
     <section className="surface-card member-surface">
-      <SectionHeading title="Change password" subtitle="Your password is stored securely by Supabase Auth, never in CampusSphere’s database." />
+      <SectionHeading title="Change password" subtitle="Your password is stored securely by Supabase Auth, never in my AMRITA’s records." />
       <form className="profile-form" onSubmit={changePassword}>
         <label className="field-label">Current password<input type="password" value={pw.current} onChange={(event) => setPw({ ...pw, current: event.target.value })} required autoComplete="current-password" /></label>
         <label className="field-label">New password<input type="password" value={pw.next} onChange={(event) => setPw({ ...pw, next: event.target.value })} required minLength={8} autoComplete="new-password" /></label>
@@ -1137,7 +1336,7 @@ function ProfilePage({ profile, onSaved, notify }) {
   );
 }
 
-function IctsDashboard({ onLogout }) {
+function IctsDashboard({ onLogout, theme, onToggleTheme }) {
   const [people, setPeople] = useState([]);
   const [loadError, setLoadError] = useState('');
   const [kind, setKind] = useState('faculty_coordinator');
@@ -1207,16 +1406,17 @@ function IctsDashboard({ onLogout }) {
     <div className="app-shell shell-icts icts-shell">
       <main className="main-panel icts-main">
         <header className="topbar">
-          <div className="breadcrumbs"><span>CampusSphere</span><span className="crumb-slash">/</span><strong>ICTS</strong></div>
+          <div className="breadcrumbs"><span>my AMRITA</span><span className="crumb-slash">/</span><strong>ICTS</strong></div>
           <div className="topbar-right">
             <button className={`button ${view === 'accounts' ? 'button-primary' : 'button-outline'}`} onClick={() => setView('accounts')}>Accounts</button>
             <button className={`button ${view === 'password' ? 'button-primary' : 'button-outline'}`} onClick={() => setView('password')}><KeyRound size={14} /> Password</button>
             <span className="role-pill">ICTS</span>
+            <ThemeToggle theme={theme} onToggle={onToggleTheme} />
             <button className="button button-outline topbar-logout" onClick={onLogout}><LogOut size={15} /> Log out</button>
           </div>
         </header>
         <div className="page-content">
-          <div className="page-heading"><div><span className="eyebrow">ICTS DEPARTMENT</span><h1>Account desk</h1><p>Create admin, faculty and student logins. Sign-in credentials are stored in Supabase; CampusSphere profiles are stored in MongoDB.</p></div></div>
+          <div className="page-heading"><div><span className="eyebrow">ICTS DEPARTMENT</span><h1>Account desk</h1><p>Create admin, faculty and student logins. Sign-in credentials are stored in Supabase; my AMRITA profiles are stored in MongoDB.</p></div></div>
           {loadError && <div className="notice notice-error" role="alert">{loadError}</div>}
 
           {view === 'password' && <div className="profile-page"><PasswordCard /></div>}
@@ -1282,7 +1482,7 @@ function IctsDashboard({ onLogout }) {
 function pageDescription(page, role) {
   const descriptions = {
     clubs: 'A little curiosity can lead to a really good thing.',
-    events: 'Save a seat for something happening on campus.',
+    events: 'Explore what is happening on campus and register from event details.',
     applications: role === 'student' ? 'See where your applications are and what happens next.' : 'Make room for someone new in your community.',
     members: 'Keep the people, roles, and good work connected.',
     chats: 'Stay close to your club community with member-only conversations.',
@@ -1308,11 +1508,10 @@ function SectionHeading({ title, subtitle, action, onAction }) {
   return <div className="section-heading"><div><h2>{title}</h2><p>{subtitle}</p></div>{action && <button className="text-link" onClick={onAction}>{action}<ArrowRight size={15} /></button>}</div>;
 }
 
-function EventRow({ event, index = 0, registered, role, canReview, isPresident, onDetails, onRegister, onCancel, onReview, onResubmit }) {
+function EventRow({ event, index = 0, canReview, isPresident, onDetails, onReview, onResubmit }) {
   const date = event.eventDate ? new Date(event.eventDate) : null;
   const eventDate = date && !Number.isNaN(date.getTime()) ? date : null;
   const count = event.registeredCount || 0;
-  const full = count >= event.capacity;
   return <article className="event-row">
     <button className={`event-poster event-poster-${index % 3}`} type="button" onClick={onDetails} aria-label={`View ${event.title} details`}>
       {event.posterUrl
@@ -1323,7 +1522,6 @@ function EventRow({ event, index = 0, registered, role, canReview, isPresident, 
     <div className="event-details"><div className="event-meta"><span>{event.clubId?.name || 'Campus club'}</span><span className={statusClass(event.status)}>{event.status.replaceAll('_', ' ')}</span></div><h3>{event.title}</h3><p><CalendarDays size={13} /> {formatDate(event.eventDate, { weekday: 'short', month: 'short', day: 'numeric' })}{event.venueId?.name && <> <span>·</span> {event.venueId.name}</>}</p>{event.rejectionFeedback && <small className="rejection-feedback">Feedback: {event.rejectionFeedback}</small>}</div>
     <div className="event-row-action">
       <button className="text-link" type="button" onClick={onDetails}>View details <ArrowRight size={14} /></button>
-      {role !== 'college_admin' && event.status === 'approved' && <button className={`button ${registered ? 'button-registered' : 'button-outline'}`} disabled={!registered && full} onClick={registered ? onCancel : onRegister}>{registered ? 'Cancel seat' : full ? 'Full' : 'Save a seat'}</button>}
       {canReview && ['mentor_pending', 'student_affairs_pending'].includes(event.status) && <div className="review-actions"><button className="button button-outline" onClick={() => onReview('approved')}>Approve</button><button className="button button-quiet" onClick={() => onReview('rejected')}>Decline</button></div>}
       {isPresident && ['draft', 'rejected'].includes(event.status) && <button className="button button-outline" onClick={onResubmit}>Submit for approval</button>}
       {typeof event.capacity === 'number' && <small>{count}/{event.capacity} places</small>}
@@ -1331,43 +1529,130 @@ function EventRow({ event, index = 0, registered, role, canReview, isPresident, 
   </article>;
 }
 
-function EventDetailsDialog({ event, onClose }) {
-  const date = event.eventDate ? new Date(event.eventDate) : null;
-  const validDate = date && !Number.isNaN(date.getTime());
-  const time = validDate
-    ? date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })
-    : '';
-  const clubName = event.clubId?.name || 'Campus club';
-  const venue = event.venueId;
+function EventDetailsDialog({ event, events, registrations, onNavigate, onClose, canRegister, onRegister, onCancel }) {
+  const [confirmation, setConfirmation] = useState('');
+  const [pendingEvent, setPendingEvent] = useState(null);
+  const [slideDirection, setSlideDirection] = useState(0);
+  const isTransitioning = useRef(false);
+  const transitionTimer = useRef(null);
+  const carouselEvents = useMemo(
+    () => events.some((item) => item._id === event._id) ? events : [event, ...events],
+    [events, event],
+  );
+  const carouselIndex = carouselEvents.findIndex((item) => item._id === event._id);
+  const hasMultipleEvents = carouselEvents.length > 1;
+
+  const confirmAction = async () => {
+    if (confirmation === 'register') await onRegister(event);
+    if (confirmation === 'cancel') await onCancel(event);
+    setConfirmation('');
+    onClose();
+  };
+
+  const finishNavigation = useCallback((targetEvent) => {
+    if (!isTransitioning.current) return;
+    isTransitioning.current = false;
+    window.clearTimeout(transitionTimer.current);
+    transitionTimer.current = null;
+    setPendingEvent(null);
+    setSlideDirection(0);
+    setConfirmation('');
+    onNavigate(targetEvent);
+  }, [onNavigate]);
+
+  const moveCarousel = useCallback((direction) => {
+    if (isTransitioning.current || carouselEvents.length < 2) return;
+    const nextIndex = (carouselIndex + direction + carouselEvents.length) % carouselEvents.length;
+    const nextEvent = carouselEvents[nextIndex];
+    if (!nextEvent || nextEvent._id === event._id) return;
+    isTransitioning.current = true;
+    setConfirmation('');
+    setPendingEvent(nextEvent);
+    setSlideDirection(direction);
+    transitionTimer.current = window.setTimeout(() => finishNavigation(nextEvent), 500);
+  }, [carouselEvents, carouselIndex, event._id, finishNavigation]);
 
   useEffect(() => {
     const closeOnEscape = (keyboardEvent) => {
       if (keyboardEvent.key === 'Escape') onClose();
+      const targetIsEditable = keyboardEvent.target instanceof HTMLElement
+        && keyboardEvent.target.matches('input, textarea, select, [contenteditable="true"]');
+      if (hasMultipleEvents && !targetIsEditable && keyboardEvent.key === 'ArrowLeft') moveCarousel(-1);
+      if (hasMultipleEvents && !targetIsEditable && keyboardEvent.key === 'ArrowRight') moveCarousel(1);
     };
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
-  }, [onClose]);
+  }, [onClose, hasMultipleEvents, moveCarousel]);
+
+  useEffect(() => () => window.clearTimeout(transitionTimer.current), []);
+
+  const renderSlide = (slideEvent, slideIndex) => {
+    const date = slideEvent.eventDate ? new Date(slideEvent.eventDate) : null;
+    const endDate = slideEvent.endDate ? new Date(slideEvent.endDate) : null;
+    const validDate = date && !Number.isNaN(date.getTime());
+    const time = validDate
+      ? `${date.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}${endDate && !Number.isNaN(endDate.getTime()) ? ` – ${endDate.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}` : ''}`
+      : '';
+    const clubName = slideEvent.clubId?.name || 'Campus club';
+    const venue = slideEvent.venueId;
+    const full = typeof slideEvent.capacity === 'number'
+      && (slideEvent.registeredCount || 0) >= slideEvent.capacity;
+    const slideRegistered = registrations.has(slideEvent._id);
+
+    return <div className="event-dialog-slide" key={slideEvent._id}>
+      <div className="event-dialog-poster">
+        {slideEvent.posterUrl
+          ? <img src={slideEvent.posterUrl} alt={`${slideEvent.title} event poster`} />
+          : <span className="event-dialog-poster-fallback"><CalendarDays size={34} /><small>CAMPUS EVENT</small><strong>{slideEvent.title}</strong></span>}
+        {hasMultipleEvents && <div className="event-dialog-carousel-controls" aria-label="Browse events">
+          <button className="icon-button" type="button" onClick={() => moveCarousel(-1)} disabled={isTransitioning.current} aria-label="Previous event"><ChevronLeft size={18} /></button>
+          <span>{slideIndex + 1} / {carouselEvents.length}</span>
+          <button className="icon-button" type="button" onClick={() => moveCarousel(1)} disabled={isTransitioning.current} aria-label="Next event"><ChevronRight size={18} /></button>
+        </div>}
+      </div>
+      <div className="event-dialog-content">
+        <div className="event-meta"><span>{clubName}</span><span className={statusClass(slideEvent.status)}>{slideEvent.status.replaceAll('_', ' ')}</span></div>
+        <h2 id={slideEvent._id === event._id ? 'event-dialog-title' : undefined}>{slideEvent.title}</h2>
+        <p className="event-dialog-description">{slideEvent.description || 'Event details will be shared by the club soon.'}</p>
+        <div className="event-dialog-facts">
+          <div><CalendarDays size={17} /><span><strong>{validDate ? formatDate(slideEvent.eventDate, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }) : 'Date to be announced'}</strong><small>{time || 'Time to be announced'}</small></span></div>
+          {venue && <div><Compass size={17} /><span><strong>{venue.name || 'Venue'}</strong><small>{venue.location || 'Campus venue'}</small></span></div>}
+          {typeof slideEvent.capacity === 'number' && <div><Users size={17} /><span><strong>{slideEvent.registeredCount || 0} of {slideEvent.capacity} seats reserved</strong><small>Campus community</small></span></div>}
+        </div>
+        {slideEvent._id === event._id && confirmation && <div className="registration-confirm" role="group" aria-label="Confirm event registration">
+          <strong>{confirmation === 'register' ? 'Do you want to register for this event?' : 'Do you want to cancel your registration?'}</strong>
+          <div><button className="button button-primary" type="button" onClick={confirmAction}>Yes</button><button className="button button-outline" type="button" onClick={() => setConfirmation('')}>No</button></div>
+        </div>}
+        {slideEvent._id === event._id && canRegister && slideEvent.status === 'approved' && !confirmation && (slideRegistered
+          ? <button className="button button-outline event-dialog-action" type="button" onClick={() => setConfirmation('cancel')}>Cancel registration</button>
+          : <button className="button button-primary event-dialog-action" type="button" disabled={full} onClick={() => setConfirmation('register')}>{full ? 'Registration is full' : 'Register'}</button>)}
+        {slideEvent._id === event._id && (!canRegister || slideEvent.status !== 'approved') && <button className="button button-primary event-dialog-action" type="button" onClick={onClose}>Back to events</button>}
+      </div>
+    </div>;
+  };
+
+  const previousIndex = (carouselIndex - 1 + carouselEvents.length) % carouselEvents.length;
+  const nextIndex = (carouselIndex + 1) % carouselEvents.length;
+  const previousEvent = pendingEvent && slideDirection < 0 ? pendingEvent : event;
+  const nextEvent = pendingEvent && slideDirection > 0 ? pendingEvent : carouselEvents[nextIndex];
+  const firstSlide = slideDirection < 0 ? previousEvent : event;
+  const secondSlide = slideDirection < 0 ? event : nextEvent;
+  const firstIndex = slideDirection < 0 ? previousIndex : carouselIndex;
+  const secondIndex = slideDirection < 0 ? carouselIndex : nextIndex;
 
   return <div className="event-dialog-backdrop" onMouseDown={(mouseEvent) => {
     if (mouseEvent.target === mouseEvent.currentTarget) onClose();
   }}>
     <section className="event-dialog" role="dialog" aria-modal="true" aria-labelledby="event-dialog-title">
       <button className="icon-button event-dialog-close" type="button" onClick={onClose} aria-label="Close event details"><X size={18} /></button>
-      <div className="event-dialog-poster">
-        {event.posterUrl
-          ? <img src={event.posterUrl} alt={`${event.title} event poster`} />
-          : <span className="event-dialog-poster-fallback"><CalendarDays size={34} /><small>CAMPUS EVENT</small><strong>{event.title}</strong></span>}
-      </div>
-      <div className="event-dialog-content">
-        <div className="event-meta"><span>{clubName}</span><span className={statusClass(event.status)}>{event.status.replaceAll('_', ' ')}</span></div>
-        <h2 id="event-dialog-title">{event.title}</h2>
-        <p className="event-dialog-description">{event.description || 'Event details will be shared by the club soon.'}</p>
-        <div className="event-dialog-facts">
-          <div><CalendarDays size={17} /><span><strong>{validDate ? formatDate(event.eventDate, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' }) : 'Date to be announced'}</strong><small>{time || 'Time to be announced'}</small></span></div>
-          {venue && <div><Compass size={17} /><span><strong>{venue.name || 'Venue'}</strong><small>{venue.location || 'Campus venue'}</small></span></div>}
-          {typeof event.capacity === 'number' && <div><Users size={17} /><span><strong>{event.registeredCount || 0} of {event.capacity} seats reserved</strong><small>Campus community</small></span></div>}
-        </div>
-        <button className="button button-primary event-dialog-action" type="button" onClick={onClose}>Back to events</button>
+      <div
+        className={`event-dialog-track ${pendingEvent ? `event-dialog-track-${slideDirection > 0 ? 'next' : 'previous'}` : 'event-dialog-track-idle'}`}
+        onAnimationEnd={(animationEvent) => {
+          if (animationEvent.target === animationEvent.currentTarget && pendingEvent) finishNavigation(pendingEvent);
+        }}
+      >
+        {renderSlide(firstSlide, firstIndex)}
+        {pendingEvent && renderSlide(secondSlide, secondIndex)}
       </div>
     </section>
   </div>;
@@ -1543,7 +1828,17 @@ function ClubCard({ club, index, application, isMember, onApply, isAdmin, onEdit
 }
 
 function ApplicationRow({ application, isOwn, canReview, onReview }) {
-  return <article className="application-row"><div className="application-avatar">{initials(application.profileId?.name)}</div><div className="application-details"><div className="application-title"><strong>{application.clubId?.name || 'Club application'}</strong><span className={statusClass(application.status)}>{application.status}</span></div><p>{isOwn ? 'Your application' : `${application.profileId?.name || 'A student'}${application.profileId?.email ? ` · ${application.profileId.email}` : ''}`}</p><small>Applying for: {application.requestedPosition === 'executive' ? 'Executive consideration' : 'Club membership'}</small>{application.reason && <small>“{application.reason}”</small>}{application.rejectionFeedback && <small className="rejection-feedback">Feedback: {application.rejectionFeedback}</small>}<time>{formatDate(application.appliedDate)}</time></div>
+  return <article className="application-row"><div className="application-avatar">{initials(application.profileId?.name)}</div><div className="application-details"><div className="application-title"><strong>{application.clubId?.name || 'Club application'}</strong><span className={statusClass(application.status)}>{application.status}</span></div><p>{isOwn ? 'Your application' : `${application.profileId?.name || 'A student'}${application.profileId?.email ? ` · ${application.profileId.email}` : ''}`}</p><small>Applying for: {application.requestedPosition === 'executive' ? 'Executive consideration' : 'Club membership'}</small>
+    <details className="applicant-details" open={canReview && application.status === 'pending'}><summary>Applicant details</summary><dl>
+      <div><dt>Name</dt><dd>{application.profileId?.name || 'Not provided'}</dd></div>
+      <div><dt>Roll number</dt><dd>{application.profileId?.registerNumber || 'Not provided'}</dd></div>
+      <div><dt>Department</dt><dd>{application.profileId?.department || 'Not provided'}</dd></div>
+      <div><dt>Year of study</dt><dd>{application.yearOfStudy || 'Not provided'}</dd></div>
+      <div><dt>Phone</dt><dd>{application.applicantPhone || application.profileId?.phone || 'Not provided'}</dd></div>
+      <div><dt>Domain</dt><dd>{application.domain || 'General'}</dd></div>
+      <div className="applicant-reason"><dt>Reason for joining</dt><dd>{application.reason || 'Not provided'}</dd></div>
+    </dl></details>
+    {application.rejectionFeedback && <small className="rejection-feedback">Feedback: {application.rejectionFeedback}</small>}<time>{formatDate(application.appliedDate)}</time></div>
     {canReview && application.status === 'pending' && <div className="review-actions"><button className="review-accept" onClick={() => onReview('approved')} aria-label="Approve application"><Check size={16} /></button><button className="review-decline" onClick={() => onReview('rejected')} aria-label="Decline application"><X size={16} /></button></div>}
   </article>;
 }
@@ -1617,6 +1912,19 @@ export default function App() {
   const [session, setSession] = useState(undefined);
   const [profile, setProfile] = useState(null);
   const [profileError, setProfileError] = useState('');
+  const [theme, setTheme] = useState(loadTheme);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute('content', theme === 'dark' ? '#171820' : '#efefef');
+    try {
+      window.localStorage.setItem('campussphere-theme', theme);
+    } catch (error) {
+      if (!(error instanceof DOMException) || error.name !== 'SecurityError') throw error;
+    }
+  }, [theme]);
+
+  const toggleTheme = () => setTheme((currentTheme) => currentTheme === 'dark' ? 'light' : 'dark');
 
   useEffect(() => {
     let active = true;
@@ -1665,8 +1973,8 @@ export default function App() {
   if (profileError) {
     return <div className="profile-error"><div className="config-card"><span className="brand-mark"><Sparkles size={19} /></span><span className="eyebrow">A CONNECTION ISSUE</span><h1>One more moment.</h1><p>{profileError}</p><button className="button button-primary" onClick={() => window.location.reload()}>Try again <ArrowRight size={16} /></button><button className="text-link" onClick={logout}>Sign out</button></div></div>;
   }
-  if (!session) return <AuthScreen onAuthenticated={setSession} />;
+  if (!session) return <AuthScreen onAuthenticated={setSession} theme={theme} onToggleTheme={toggleTheme} />;
   if (!profile) return <div className="app-loading"><span className="loading-orbit" /><p>Setting up your space…</p></div>;
-  if (profile.role === 'icts') return <IctsDashboard onLogout={logout} />;
-  return <Dashboard profile={profile} onLogout={logout} onProfileUpdate={setProfile} />;
+  if (profile.role === 'icts') return <IctsDashboard onLogout={logout} theme={theme} onToggleTheme={toggleTheme} />;
+  return <Dashboard profile={profile} onLogout={logout} onProfileUpdate={setProfile} theme={theme} onToggleTheme={toggleTheme} />;
 }

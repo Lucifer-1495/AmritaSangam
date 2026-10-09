@@ -1,10 +1,8 @@
-import { Sparkles } from 'lucide-react';
-
 export default function PortalBrand({ className = '' }) {
   return (
-    <div className={className}>
-      <span className="brand-mark"><Sparkles size={19} /></span>
-      CampusSphere
+    <div className={`portal-brand ${className}`.trim()} aria-label="my AMRITA">
+      <span className="portal-brand-my">my</span>
+      <span className="portal-brand-amrita">AMRITA</span>
     </div>
   );
 }

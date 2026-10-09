@@ -3,10 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#b20b4a" />
-    <meta name="description" content="CampusSphere student portal — access campus clubs, events, and student services." />
-    <link rel="icon" type="image/svg+xml" href="/campussphere.svg" />
-    <title>CampusSphere | Student Portal</title>
+    <meta name="theme-color" content="#efefef" />
+    <meta name="description" content="my AMRITA — access campus clubs, events, and student services." />
+    <link rel="icon" type="image/jpeg" href="/amrita-symbol.jpg" />
+    <script>
+      try {
+        document.documentElement.dataset.theme = localStorage.getItem('campussphere-theme') === 'dark' ? 'dark' : 'light';
+      } catch (error) {
+        if (!(error instanceof DOMException) || error.name !== 'SecurityError') throw error;
+        document.documentElement.dataset.theme = 'light';
+      }
+    </script>
+    <title>my AMRITA | Student Portal</title>
   </head>
   <body>
     <div id="root"></div>

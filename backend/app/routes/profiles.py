@@ -136,7 +136,7 @@ def create_profile(request: Request, body: dict, profile=Depends(require_roles(R
             logger.exception("Failed to roll back a Supabase user after profile creation failed.")
             raise HTTPException(
                 status_code=500,
-                detail="The account was created in Supabase but could not be saved in CampusSphere. Contact the system owner.",
+                detail="The account was created in Supabase but could not be saved in my AMRITA. Contact the system owner.",
             ) from rollback_error
         raise error
 
@@ -189,6 +189,6 @@ def delete_profile(request: Request, identity: str, profile=Depends(require_role
         logger.exception("Supabase login deleted, but MongoDB account cleanup failed.")
         raise HTTPException(
             status_code=500,
-            detail="The login was deleted in Supabase, but some CampusSphere data could not be cleaned up. Retry the deletion to finish cleanup.",
+            detail="The login was deleted in Supabase, but some data in my AMRITA could not be cleaned up. Retry the deletion to finish cleanup.",
         ) from error
     return {"message": "Account and account-linked records were deleted."}

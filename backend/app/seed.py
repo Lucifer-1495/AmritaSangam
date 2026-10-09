@@ -6,7 +6,7 @@ from .database import connect_database, migrate_legacy_data
 
 def seed():
     if not settings.mongo_uri:
-        raise RuntimeError("MONGO_URI is required to seed CampusSphere.")
+        raise RuntimeError("MONGO_URI is required to seed my AMRITA.")
     client, db = connect_database(settings.mongo_uri)
     try:
         migrate_legacy_data(db, settings.icts_email)
@@ -110,7 +110,7 @@ def seed():
                 }},
                 upsert=True,
             )
-        print("CampusSphere sample data is ready. Existing data was preserved.")
+        print("my AMRITA sample data is ready. Existing data was preserved.")
     finally:
         client.close()
 

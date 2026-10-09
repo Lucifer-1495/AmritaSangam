@@ -13,7 +13,7 @@ from app import auth
 from app.config import settings
 from app.database import serialize_document
 from app.main import app
-from app.routes import events as event_routes
+from app.routes import clubs as club_routes, events as event_routes
 from app.services.common import remove_csv_rows_for_email
 from app.services.media import validate_image_data_url
 
@@ -31,7 +31,7 @@ def client(monkeypatch):
 
 
 def test_health_and_root_endpoints(client):
-    assert client.get("/").json() == {"name": "CampusSphere API", "health": "/api/health"}
+    assert client.get("/").json() == {"name": "my AMRITA API", "health": "/api/health"}
     assert client.get("/api/health").json() == {"status": "ok", "database": "connected"}
 
 
@@ -159,6 +159,7 @@ def test_event_creation_saves_to_mongo_without_a_supabase_request(client, monkey
         "mentor": ObjectId(),
         "clubType": "technical",
     }
+    venue_id = ObjectId()
     stored_events = []
 
     class Sessions:
@@ -176,10 +177,24 @@ def test_event_creation_saves_to_mongo_without_a_supabase_request(client, monkey
             assert query["_id"] == club_id
             return club
 
+    class Venues:
+        def find_one(self, query, projection):
+            assert query == {"_id": venue_id, "isAvailable": True}
+            return {"_id": venue_id}
+
+    class Events:
+        def find(self, query):
+            assert query["venueId"] == venue_id
+            return []
+
     class Database(dict):
         def __getitem__(self, name):
             if name == "clubs":
                 return Clubs()
+            if name == "venues":
+                return Venues()
+            if name == "events":
+                return Events()
             return super().__getitem__(name)
 
     app.state.db = Database(auth_sessions=Sessions(), profiles=Profiles())
@@ -210,7 +225,9 @@ def test_event_creation_saves_to_mongo_without_a_supabase_request(client, monkey
             "title": "Campus coding night",
             "description": "Build a project with your club.",
             "eventDate": "2026-11-01T17:00",
+            "endDate": "2026-11-01T19:00",
             "clubId": str(club_id),
+            "venueId": str(venue_id),
             "capacity": 40,
         },
     )
@@ -220,6 +237,241 @@ def test_event_creation_saves_to_mongo_without_a_supabase_request(client, monkey
     assert len(stored_events) == 1
     assert stored_events[0]["title"] == "Campus coding night"
     assert stored_events[0]["clubId"] == club_id
+    assert stored_events[0]["venueId"] == venue_id
+    assert stored_events[0]["endDate"] == datetime(2026, 11, 1, 19, tzinfo=timezone.utc)
+
+
+def test_venue_conflict_uses_start_and_end_overlap():
+    venue_id = ObjectId()
+    existing = {
+        "venueId": venue_id,
+        "eventDate": datetime(2026, 11, 1, 17, tzinfo=timezone.utc),
+        "endDate": datetime(2026, 11, 1, 19, tzinfo=timezone.utc),
+        "status": "approved",
+    }
+
+    class Events:
+        def find(self, query):
+            return [existing]
+
+    class Database(dict):
+        def __getitem__(self, name):
+            assert name == "events"
+            return Events()
+
+    database = Database()
+    overlapping = event_routes.find_venue_conflict(
+        database,
+        venue_id,
+        datetime(2026, 11, 1, 18, tzinfo=timezone.utc),
+        datetime(2026, 11, 1, 20, tzinfo=timezone.utc),
+    )
+    adjacent = event_routes.find_venue_conflict(
+        database,
+        venue_id,
+        datetime(2026, 11, 1, 19, tzinfo=timezone.utc),
+        datetime(2026, 11, 1, 20, tzinfo=timezone.utc),
+    )
+
+    assert overlapping is existing
+    assert adjacent is None
+
+
+def test_venue_availability_reports_occupied_slots(client):
+    profile_id = ObjectId()
+    venue_id = ObjectId()
+    profile = {
+        "_id": profile_id,
+        "supabaseId": "student-user",
+        "name": "Campus Student",
+        "email": "student@example.edu",
+        "role": "student",
+    }
+    venue = {
+        "_id": venue_id,
+        "name": "Main Hall",
+        "location": "Block A",
+        "isAvailable": True,
+    }
+    existing_event = {
+        "_id": ObjectId(),
+        "venueId": venue_id,
+        "eventDate": datetime(2026, 11, 1, 11, 30, tzinfo=timezone.utc),
+        "endDate": datetime(2026, 11, 1, 13, 30, tzinfo=timezone.utc),
+        "status": "approved",
+    }
+
+    class Sessions:
+        def find_one(self, query):
+            assert query["tokenHash"] == hashlib.sha256(b"mongo-session-token").hexdigest()
+            return {"_id": ObjectId(), "profileId": profile_id, "supabaseId": "student-user"}
+
+    class Profiles:
+        def find_one(self, query):
+            assert query["_id"] == profile_id
+            return profile
+
+    class VenueCursor(list):
+        def sort(self, key, direction):
+            return self
+
+    class Venues:
+        def find(self, query):
+            assert query == {"isAvailable": True}
+            return VenueCursor([venue])
+
+    class Events:
+        def find(self, query):
+            assert query["venueId"] == venue_id
+            return [existing_event]
+
+    class Database(dict):
+        def __getitem__(self, name):
+            if name == "venues":
+                return Venues()
+            if name == "events":
+                return Events()
+            return super().__getitem__(name)
+
+    app.state.db = Database(
+        auth_sessions=Sessions(),
+        profiles=Profiles(),
+    )
+    response = client.get(
+        "/api/venues/availability",
+        params={
+            "eventDate": "2026-11-01T18:00:00+05:30",
+            "endDate": "2026-11-01T20:00:00+05:30",
+        },
+        headers={"cookie": "__Host-campussphere_session=mongo-session-token"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == [{
+        "_id": str(venue_id),
+        "name": "Main Hall",
+        "location": "Block A",
+        "isAvailable": True,
+        "available": False,
+    }]
+
+
+def test_event_time_range_rejects_end_before_start():
+    with pytest.raises(HTTPException) as error:
+        event_routes.event_time_range("2026-11-01T19:00", "2026-11-01T17:00")
+
+    assert error.value.status_code == 400
+    assert error.value.detail == "Event end time must be after its start time."
+
+
+def test_event_time_range_preserves_local_timezone_offset():
+    start, end = event_routes.event_time_range(
+        "2026-11-01T17:00:00+05:30",
+        "2026-11-01T19:00:00+05:30",
+    )
+
+    assert start == datetime(2026, 11, 1, 11, 30, tzinfo=timezone.utc)
+    assert end == datetime(2026, 11, 1, 13, 30, tzinfo=timezone.utc)
+
+
+def test_club_domains_are_normalized_and_validated():
+    assert club_routes.normalize_domains("Web development\nDesign, web development") == [
+        "Web development",
+        "Design",
+    ]
+    with pytest.raises(HTTPException) as error:
+        club_routes.normalize_domains(" , \n ")
+    assert error.value.status_code == 400
+    assert error.value.detail == "Add at least one application domain for this club."
+
+
+def test_application_saves_student_provided_details_and_club_domain(client, monkeypatch):
+    profile_id = ObjectId()
+    club_id = ObjectId()
+    profile = {
+        "_id": profile_id,
+        "supabaseId": "student-user",
+        "name": "Campus Student",
+        "email": "student@example.edu",
+        "role": "student",
+    }
+    club = {
+        "_id": club_id,
+        "recruitmentOpen": True,
+        "domains": ["Robotics", "Design"],
+    }
+    stored_applications = []
+
+    class Sessions:
+        def find_one(self, query):
+            assert query["tokenHash"] == hashlib.sha256(b"mongo-session-token").hexdigest()
+            return {"_id": ObjectId(), "profileId": profile_id, "supabaseId": "student-user"}
+
+    class Profiles:
+        def find_one(self, query):
+            assert query["_id"] == profile_id
+            return profile
+
+    class Clubs:
+        def find_one(self, query):
+            assert query["_id"] == club_id
+            return club
+
+    class Members:
+        def find_one(self, query, projection):
+            return None
+
+    class Applications:
+        def find_one(self, query, projection):
+            return None
+
+    class Database(dict):
+        def __getitem__(self, name):
+            if name == "clubs":
+                return Clubs()
+            if name == "clubmembers":
+                return Members()
+            if name == "membershipapplications":
+                return Applications()
+            return super().__getitem__(name)
+
+    app.state.db = Database(
+        auth_sessions=Sessions(),
+        profiles=Profiles(),
+    )
+    monkeypatch.setattr(
+        auth.httpx, "request",
+        lambda *args, **kwargs: pytest.fail("Application submissions must not call Supabase."),
+    )
+
+    def save_application(database, collection, document):
+        assert database is app.state.db
+        assert collection == "applications"
+        stored_applications.append(document)
+        return serialize_document({"_id": ObjectId(), **document})
+
+    monkeypatch.setattr(club_routes, "insert", save_application)
+    response = client.post(
+        "/api/applications",
+        headers={
+            "origin": settings.client_origin,
+            "cookie": "__Host-campussphere_session=mongo-session-token",
+        },
+        json={
+            "clubId": str(club_id),
+            "reason": "I want to help build projects.",
+            "domain": "Robotics",
+            "yearOfStudy": "2nd",
+            "applicantPhone": "+91 98765 43210",
+            "requestedPosition": "executive",
+        },
+    )
+
+    assert response.status_code == 201
+    assert stored_applications[0]["profileId"] == profile_id
+    assert stored_applications[0]["domain"] == "Robotics"
+    assert stored_applications[0]["yearOfStudy"] == "2nd"
+    assert stored_applications[0]["applicantPhone"] == "+91 98765 43210"
 
 
 def test_logout_revokes_the_mongo_session_without_calling_supabase(client, monkeypatch):
@@ -293,7 +545,8 @@ def test_api_keeps_the_existing_route_contract():
         "/api/event-reports",
         "/api/reports/summary",
     } <= paths
-    assert sum(len(operations) for operations in routes.values()) == 63
+    assert sum(len(operations) for operations in routes.values()) == 64
+    assert "/api/venues/availability" in paths
 
 
 def test_mongo_documents_serialize_ids_and_dates_for_react():

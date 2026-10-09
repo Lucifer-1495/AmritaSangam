@@ -26,6 +26,35 @@ from ..services.media import validate_image_data_url
 router = APIRouter()
 
 
+def normalize_domains(value):
+    if value is None:
+        return ["General"]
+    if isinstance(value, str):
+        values = value.replace(",", "\n").splitlines()
+    elif isinstance(value, list):
+        values = value
+    else:
+        raise HTTPException(status_code=400, detail="Club domains must be a list of names.")
+    domains = []
+    seen = set()
+    for item in values:
+        if not isinstance(item, str):
+            raise HTTPException(status_code=400, detail="Club domain names must be text.")
+        domain = item.strip()
+        key = domain.casefold()
+        if not domain or key in seen:
+            continue
+        if len(domain) > 60:
+            raise HTTPException(status_code=400, detail="Each club domain must be 60 characters or fewer.")
+        domains.append(domain)
+        seen.add(key)
+    if not domains:
+        raise HTTPException(status_code=400, detail="Add at least one application domain for this club.")
+    if len(domains) > 20:
+        raise HTTPException(status_code=400, detail="A club can have at most 20 application domains.")
+    return domains
+
+
 @router.get("/my/clubs")
 def my_clubs(request: Request, profile=Depends(current_profile)):
     db = request.app.state.db
@@ -54,6 +83,7 @@ def create_club(request: Request, body: dict, profile=Depends(current_profile)):
         "description": body["description"],
         "category": body.get("category") or "Community",
         "clubType": body["clubType"],
+        "domains": normalize_domains(body.get("domains")),
         "mentor": mentor_id,
         "recruitmentOpen": bool(body.get("recruitmentOpen")),
         "foundedDate": datetime.now(timezone.utc),
@@ -74,11 +104,13 @@ def update_club(request: Request, identity: str, body: dict, profile=Depends(cur
     if profile["role"] != Role.ADMIN.value and not can_manage_club(db, identity, profile):
         raise HTTPException(status_code=403, detail="Only this club’s leadership or Student Affairs can edit it.")
     allowed = (
-        ["name", "description", "category", "clubType", "mentor", "recruitmentOpen", "logoUrl"]
+        ["name", "description", "category", "clubType", "mentor", "recruitmentOpen", "logoUrl", "domains"]
         if profile["role"] == Role.ADMIN.value
         else ["name", "description", "category", "logoUrl"]
     )
     updates = {key: body[key] for key in allowed if key in body}
+    if "domains" in updates:
+        updates["domains"] = normalize_domains(updates["domains"])
     if "logoUrl" in updates:
         updates["logoUrl"] = validate_image_data_url(
             updates["logoUrl"], "Club logo", 750_000, {"image/png"}
@@ -277,8 +309,8 @@ def list_applications(request: Request, clubId: str | None = None, profile=Depen
         ]
     applications = list(collection(db, "applications").find(query).sort("appliedDate", -1))
     populate_many(db, applications, [
-        ("clubId", "clubs", ["name"]),
-        ("profileId", "profiles", ["name", "email"]),
+        ("clubId", "clubs", ["name", "domains"]),
+        ("profileId", "profiles", ["name", "email", "registerNumber", "department", "joiningYear", "phone"]),
     ])
     return [serialize_document(item) for item in applications]
 
@@ -287,7 +319,13 @@ def list_applications(request: Request, clubId: str | None = None, profile=Depen
 def create_application(request: Request, body: dict, profile=Depends(current_profile)):
     if profile["role"] not in STUDENT_ROLES:
         raise HTTPException(status_code=403, detail="Only a student account can apply to join a club.")
-    require_fields(body, ["clubId", "reason"])
+    require_fields(body, ["clubId", "reason", "domain", "yearOfStudy", "applicantPhone"])
+    year_of_study = str(body["yearOfStudy"])
+    if year_of_study not in ("1st", "2nd", "3rd", "4th", "Other"):
+        raise HTTPException(status_code=400, detail="Choose a valid year of study.")
+    applicant_phone = str(body["applicantPhone"]).strip()
+    if not applicant_phone or len(applicant_phone) > 20:
+        raise HTTPException(status_code=400, detail="Enter a phone number of 1 to 20 characters.")
     if body.get("requestedPosition") and body["requestedPosition"] not in ("member", "executive"):
         raise HTTPException(status_code=400, detail="Membership applications can request member or executive consideration.")
     db = request.app.state.db
@@ -297,6 +335,9 @@ def create_application(request: Request, body: dict, profile=Depends(current_pro
         raise HTTPException(status_code=404, detail="Club not found.")
     if not club.get("recruitmentOpen"):
         raise HTTPException(status_code=409, detail="Applications for this club are currently closed.")
+    domains = club.get("domains") or ["General"]
+    if body["domain"] not in domains:
+        raise HTTPException(status_code=400, detail="Choose one of this club’s application domains.")
     if collection(db, "members").find_one({"clubId": club_id, "profileId": as_oid(profile["_id"])}, {"_id": 1}):
         raise HTTPException(status_code=409, detail="You are already a member of this club.")
     if collection(db, "applications").find_one({
@@ -307,6 +348,9 @@ def create_application(request: Request, body: dict, profile=Depends(current_pro
         "clubId": club_id,
         "profileId": as_oid(profile["_id"]),
         "reason": body["reason"],
+        "domain": body["domain"],
+        "yearOfStudy": year_of_study,
+        "applicantPhone": applicant_phone,
         "requestedPosition": body.get("requestedPosition") or "member",
         "status": "pending",
         "appliedDate": datetime.now(timezone.utc),
