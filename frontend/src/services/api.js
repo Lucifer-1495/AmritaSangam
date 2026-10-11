@@ -13,7 +13,7 @@ export async function api(path, options = {}) {
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
     });
   } catch {
-    throw new Error('my AMRITA could not reach the API. Make sure the FastAPI server is running.');
+    throw new Error('Amrita Sangam could not reach the API. Make sure the FastAPI server is running.');
   }
 
   const result = await response.json().catch(() => ({}));
@@ -36,7 +36,7 @@ export async function apiDownload(path, fileName) {
       credentials: 'include',
     });
   } catch {
-    throw new Error('my AMRITA could not reach the API. Make sure the FastAPI server is running.');
+    throw new Error('Amrita Sangam could not reach the API. Make sure the FastAPI server is running.');
   }
 
   if (!response.ok) {

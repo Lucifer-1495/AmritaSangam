@@ -13,14 +13,25 @@ from ..services.common import (
     as_oid,
     can_manage_club,
     can_review_memberships,
+    has_verified_club_access,
+    has_office_bearer_membership,
+    is_club_mentor,
+    event_involves_club,
+    mentor_approval_assignments,
+    review_mentor_assignment,
+    is_executive,
+    is_office_bearer,
     collection,
     insert,
     parse_number,
     parse_date,
     populate_many,
+    populate_review_history,
     require_club_manager,
     require_fields,
     require_rejection_feedback,
+    review_history_entry,
+    is_student_affairs,
     visible_club_ids,
 )
 
@@ -35,7 +46,13 @@ def create_announcement(request: Request, body: dict, profile=Depends(current_pr
     if body.get("priority", "normal") not in ("low", "normal", "high"):
         raise HTTPException(status_code=400, detail="Priority must be low, normal or high.")
     db = request.app.state.db
-    require_club_manager(db, body["clubId"], profile)
+    club = collection(db, "clubs").find_one({"_id": as_oid(body["clubId"], "clubId")})
+    if not club:
+        raise HTTPException(status_code=404, detail="Club not found.")
+    if profile["role"] != Role.ADMIN.value and not (
+        profile["role"] == Role.FACULTY.value and is_club_mentor(club, profile["_id"])
+    ):
+        raise HTTPException(status_code=403, detail="Only the assigned club mentor or Student Affairs can publish announcements.")
     return insert(db, "announcements", {
         "clubId": as_oid(body["clubId"], "clubId"),
         "title": body["title"],
@@ -48,31 +65,63 @@ def create_announcement(request: Request, body: dict, profile=Depends(current_pr
 @router.get("/funding-requests")
 def list_funding_requests(request: Request, profile=Depends(current_profile)):
     db = request.app.state.db
-    ids = visible_club_ids(db, profile)
+    verified_access = has_verified_club_access(db, profile.get("verifiedClubId"), profile)
+    if profile["role"] == Role.COMMITTEE.value and has_office_bearer_membership(db, profile["_id"]) and not verified_access:
+        raise HTTPException(status_code=403, detail="Office bearers cannot access club funding requests.")
+    ids = [as_oid(profile["verifiedClubId"])] if verified_access else visible_club_ids(db, profile)
     query = {} if profile["role"] == Role.ADMIN.value else {"clubId": {"$in": ids}}
+    if profile["role"] == Role.FACULTY.value and ids:
+        related_event_ids = [
+            event["_id"] for event in collection(db, "events").find({
+                "$or": [{"clubId": {"$in": ids}}, {"coHostIds": {"$in": ids}}]
+            }, {"_id": 1})
+        ]
+        query = {"$or": [
+            {"clubId": {"$in": ids}},
+            {"eventId": {"$in": related_event_ids}},
+        ]}
     requests = list(collection(db, "funding").find(query).sort("requestDate", -1))
-    populate_many(db, requests, [("clubId", "clubs", ["name"])])
+    populate_many(db, requests, [
+        ("clubId", "clubs", ["name"]),
+        ("eventId", "events", ["title", "eventDate"]),
+        ("createdBy", "profiles", ["name"]),
+        ("mentorReviewedBy", "profiles", ["name"]),
+        ("studentAffairsReviewedBy", "profiles", ["name"]),
+    ])
+    for item in requests:
+        if item.get("mentorApprovals"):
+            populate_many(db, item["mentorApprovals"], [
+                ("clubId", "clubs", ["name"]),
+                ("mentorId", "profiles", ["name"]),
+            ])
+    populate_review_history(db, requests)
     return [serialize_document(item) for item in requests]
 
 
 @router.post("/funding-requests", status_code=201)
 def create_funding_request(request: Request, body: dict, profile=Depends(current_profile)):
-    require_fields(body, ["clubId", "requestedAmount", "purpose"])
+    require_fields(body, ["clubId", "eventId", "requestedAmount", "purpose"])
     db = request.app.state.db
-    require_club_manager(db, body["clubId"], profile)
     club_id = as_oid(body["clubId"], "clubId")
+    if not has_verified_club_access(db, club_id, profile):
+        require_club_manager(db, body["clubId"], profile)
     if not collection(db, "clubs").find_one({"_id": club_id}, {"_id": 1}):
         raise HTTPException(status_code=404, detail="Club not found.")
+    event_id = as_oid(body.get("eventId"), "eventId")
+    event = collection(db, "events").find_one({"_id": event_id})
+    if not event or not event_involves_club(event, club_id):
+        raise HTTPException(status_code=404, detail="Choose an event hosted by this club.")
     values = {
         "clubId": club_id,
+        "eventId": event_id,
         "requestedAmount": parse_number(body["requestedAmount"], "Requested amount", 0.01),
         "purpose": body["purpose"],
-        "status": "pending",
+        "status": "mentor_pending",
         "rejectionFeedback": "",
         "requestDate": datetime.now(timezone.utc),
+        "createdBy": as_oid(profile["_id"]),
+        "mentorApprovals": mentor_approval_assignments(db, event),
     }
-    if body.get("eventId"):
-        values["eventId"] = as_oid(body["eventId"], "eventId")
     return insert(db, "funding", values)
 
 
@@ -90,65 +139,158 @@ def review_funding_request(request: Request, identity: str, body: dict, profile=
     if not pending:
         raise HTTPException(status_code=404, detail="Funding request not found.")
     club = collection(db, "clubs").find_one({"_id": pending["clubId"]})
-    if profile["role"] != Role.ADMIN.value and str((club or {}).get("mentor", "")) != profile["_id"]:
-        raise HTTPException(status_code=403, detail="Only the assigned club mentor or Student Affairs can review this request.")
-    budget = None
-    if not rejected:
+    mentor_review = False
+    mentors_complete = False
+    if pending.get("status") in ("pending", "mentor_pending"):
+        if not pending.get("mentorApprovals"):
+            event_id = pending.get("eventId")
+            event = collection(db, "events").find_one({"_id": event_id}) if event_id else None
+            if event_id and not event:
+                raise HTTPException(status_code=404, detail="The event for this funding request no longer exists.")
+            pending["mentorApprovals"] = mentor_approval_assignments(
+                db, event or {"clubId": pending["clubId"]}
+            )
+        if profile["role"] == Role.FACULTY.value:
+            mentor_review, mentors_complete = review_mentor_assignment(
+                pending, profile["_id"], body["status"], datetime.now(timezone.utc)
+            )
+    affairs_review = (
+        pending.get("status") == "student_affairs_pending"
+        and is_student_affairs(profile)
+    )
+    if not mentor_review and not affairs_review:
+        raise HTTPException(status_code=403, detail="This funding request is not awaiting your review.")
+
+    rejected = body["status"] == "rejected"
+    updates = {
+        "status": "rejected" if rejected else "student_affairs_pending" if mentors_complete else "mentor_pending",
+        "rejectionFeedback": str(body.get("rejectionFeedback") or "").strip() if rejected else "",
+        "updatedAt": datetime.now(timezone.utc),
+    }
+    review_stage = "mentor" if mentor_review else "student_affairs"
+    audit_entry = review_history_entry(
+        profile,
+        body["status"],
+        review_stage,
+        updates["rejectionFeedback"],
+        updates["updatedAt"],
+    )
+    if mentor_review:
+        updates["mentorReviewedBy"] = as_oid(profile["_id"])
+        if rejected:
+            updates["rejectionStage"] = "mentor"
+    elif rejected:
+        updates["studentAffairsReviewedBy"] = as_oid(profile["_id"])
+        updates["rejectionStage"] = "student_affairs"
+    else:
         budget = collection(db, "budgets").find({"clubId": pending["clubId"]}).sort("academicYear", -1).limit(1)
         budget = next(iter(budget), None)
         if not budget:
             raise HTTPException(status_code=409, detail="This club needs a budget before funding can be approved.")
-    updates = {
-        "status": body["status"],
-        "reviewedBy": as_oid(profile["_id"]),
-        "rejectionFeedback": str(body.get("rejectionFeedback") or "").strip(),
-        "updatedAt": datetime.now(timezone.utc),
-    }
-    result = requests.update_one({"_id": pending["_id"], "status": "pending"}, {"$set": updates})
-    if not result.modified_count:
+
+    if mentor_review or rejected:
+        expected_status = pending.get("status")
+        update = {"$set": {**updates, "mentorApprovals": pending.get("mentorApprovals", [])}, "$push": {"reviewHistory": audit_entry}}
+        if not rejected:
+            update["$unset"] = {"rejectionStage": ""}
+        result = requests.update_one(
+            {"_id": pending["_id"], "status": expected_status},
+            update,
+        )
+        if not result.modified_count:
+            raise HTTPException(status_code=409, detail="This request has already been reviewed.")
+        pending.update(updates)
+        pending.setdefault("reviewHistory", []).append(audit_entry)
+        if not rejected:
+            pending.pop("rejectionStage", None)
+        return serialize_document(pending)
+
+    claim = requests.update_one(
+        {"_id": pending["_id"], "status": "student_affairs_pending"},
+        {"$set": {
+            "status": "student_affairs_processing",
+            "studentAffairsReviewedBy": as_oid(profile["_id"]),
+            "updatedAt": datetime.now(timezone.utc),
+        }},
+    )
+    if not claim.modified_count:
         raise HTTPException(status_code=409, detail="This request has already been reviewed.")
-    pending.update(updates)
-    if not rejected:
-        transaction = None
-        try:
-            transaction = insert(db, "transactions", {
-                "clubId": pending["clubId"],
-                "fundingRequestId": pending["_id"],
-                "amount": pending["requestedAmount"],
-                "type": "credit",
-                "description": f"Approved funding: {pending['purpose']}",
-                "transactionDate": datetime.now(timezone.utc),
-            })
-            result = collection(db, "budgets").update_one(
-                {"_id": budget["_id"]}, {"$inc": {"totalAllocated": pending["requestedAmount"]}}
+
+    transaction = None
+    budget_updated = False
+    try:
+        transaction = insert(db, "transactions", {
+            "clubId": pending["clubId"],
+            "fundingRequestId": pending["_id"],
+            "amount": pending["requestedAmount"],
+            "type": "credit",
+            "description": f"Approved funding: {pending['purpose']}",
+            "transactionDate": datetime.now(timezone.utc),
+        })
+        result = collection(db, "budgets").update_one(
+            {"_id": budget["_id"]}, {"$inc": {"totalAllocated": pending["requestedAmount"]}}
+        )
+        if not result.matched_count:
+            raise HTTPException(status_code=404, detail="The club budget no longer exists.")
+        budget_updated = True
+        updates = {
+            "status": "approved",
+            "rejectionFeedback": "",
+            "updatedAt": datetime.now(timezone.utc),
+        }
+        audit_entry = review_history_entry(
+            profile, "approved", "student_affairs", "", updates["updatedAt"]
+        )
+        result = requests.update_one(
+            {"_id": pending["_id"], "status": "student_affairs_processing"},
+            {
+                "$set": updates,
+                "$unset": {"rejectionStage": ""},
+                "$push": {"reviewHistory": audit_entry},
+            },
+        )
+        if not result.modified_count:
+            raise HTTPException(status_code=409, detail="This request has already been reviewed.")
+        pending["studentAffairsReviewedBy"] = as_oid(profile["_id"])
+        pending.update(updates)
+        pending.setdefault("reviewHistory", []).append(audit_entry)
+        pending.pop("rejectionStage", None)
+    except Exception as error:
+        logger.exception("Funding approval failed; rolling back the transaction and request state.")
+        if transaction:
+            collection(db, "transactions").delete_one({"_id": as_oid(transaction["_id"])})
+        if budget_updated:
+            collection(db, "budgets").update_one(
+                {"_id": budget["_id"]}, {"$inc": {"totalAllocated": -pending["requestedAmount"]}}
             )
-            if not result.matched_count:
-                raise HTTPException(status_code=404, detail="The club budget no longer exists.")
-        except Exception as error:
-            logger.exception("Funding approval failed; rolling back the transaction and request state.")
-            if transaction:
-                collection(db, "transactions").delete_one({"_id": as_oid(transaction["_id"])})
-            requests.update_one(
-                {"_id": pending["_id"], "status": "approved", "reviewedBy": as_oid(profile["_id"])},
-                {"$set": {"status": "pending", "updatedAt": datetime.now(timezone.utc)}, "$unset": {"reviewedBy": ""}},
-            )
-            if isinstance(error, HTTPException):
-                raise
-            raise HTTPException(status_code=500, detail="Funding approval could not be recorded.") from error
+        requests.update_one(
+            {"_id": pending["_id"], "status": "student_affairs_processing"},
+            {"$set": {"status": "student_affairs_pending", "updatedAt": datetime.now(timezone.utc)},
+             "$unset": {"studentAffairsReviewedBy": ""}},
+        )
+        if isinstance(error, HTTPException):
+            raise
+        raise HTTPException(status_code=500, detail="Funding approval could not be recorded.") from error
     return serialize_document(pending)
 
 
 @router.get("/budgets")
 def list_budgets(request: Request, clubId: str | None = None, profile=Depends(current_profile)):
     db = request.app.state.db
+    verified_access = has_verified_club_access(db, profile.get("verifiedClubId"), profile)
+    if profile["role"] == Role.COMMITTEE.value and has_office_bearer_membership(db, profile["_id"]) and not verified_access:
+        raise HTTPException(status_code=403, detail="Office bearers cannot access club budgets.")
     query = {}
     if clubId:
         club_id = as_oid(clubId, "clubId")
+        if verified_access and club_id != as_oid(profile["verifiedClubId"]):
+            raise HTTPException(status_code=403, detail="A verified club session can only access its club budget.")
         if not can_manage_club(db, clubId, profile):
-            raise HTTPException(status_code=403, detail="Not allowed to view this club’s budget.")
+            if not has_verified_club_access(db, club_id, profile):
+                raise HTTPException(status_code=403, detail="Not allowed to view this club’s budget.")
         query["clubId"] = club_id
     elif profile["role"] != Role.ADMIN.value:
-        query["clubId"] = {"$in": visible_club_ids(db, profile)}
+        query["clubId"] = {"$in": [as_oid(profile["verifiedClubId"])] if verified_access else visible_club_ids(db, profile)}
     budgets = list(collection(db, "budgets").find(query).sort("academicYear", -1))
     populate_many(db, budgets, [("clubId", "clubs", ["name"])])
     return [serialize_document(item) for item in budgets]
@@ -173,11 +315,12 @@ def create_budget(request: Request, body: dict, profile=Depends(current_profile)
 
 @router.get("/transactions")
 def list_transactions(request: Request, profile=Depends(current_profile)):
-    if profile["role"] not in (Role.FACULTY.value, Role.ADMIN.value):
-        raise HTTPException(status_code=403, detail="You do not have permission to perform this action.")
     db = request.app.state.db
-    ids = visible_club_ids(db, profile)
-    query = {} if profile["role"] == Role.ADMIN.value else {"clubId": {"$in": ids}}
+    is_finance_manager = profile["role"] in (Role.FACULTY.value, Role.ADMIN.value)
+    if not is_finance_manager:
+        raise HTTPException(status_code=403, detail="You do not have permission to perform this action.")
+    ids = None if profile["role"] == Role.ADMIN.value else visible_club_ids(db, profile)
+    query = {} if ids is None else {"clubId": {"$in": ids}}
     records = list(collection(db, "transactions").find(query).sort("transactionDate", -1))
     populate_many(db, records, [("clubId", "clubs", ["name"])])
     return [serialize_document(item) for item in records]
@@ -235,7 +378,15 @@ def create_transaction(request: Request, body: dict, profile=Depends(current_pro
 @router.get("/equipment")
 def list_equipment(request: Request, clubId: str | None = None, profile=Depends(current_profile)):
     db = request.app.state.db
-    query = {"clubId": as_oid(clubId, "clubId")} if clubId else {}
+    verified_access = has_verified_club_access(db, profile.get("verifiedClubId"), profile)
+    if verified_access:
+        verified_club_id = as_oid(profile["verifiedClubId"])
+        requested_club_id = as_oid(clubId, "clubId") if clubId else verified_club_id
+        if requested_club_id != verified_club_id:
+            raise HTTPException(status_code=403, detail="A verified club session can only access its club equipment.")
+        query = {"clubId": verified_club_id}
+    else:
+        query = {"clubId": as_oid(clubId, "clubId")} if clubId else {}
     records = list(collection(db, "equipment").find(query).sort("name", 1))
     populate_many(db, records, [("clubId", "clubs", ["name"])])
     return [serialize_document(item) for item in records]
@@ -260,10 +411,24 @@ def create_equipment(request: Request, body: dict, profile=Depends(current_profi
 @router.get("/equipment-borrows")
 def list_borrows(request: Request, profile=Depends(current_profile)):
     db = request.app.state.db
-    ids = visible_club_ids(db, profile)
-    query = {} if profile["role"] == Role.ADMIN.value else {
-        "$or": [{"profileId": as_oid(profile["_id"])}, {"clubId": {"$in": ids}}]
-    }
+    verified_access = has_verified_club_access(db, profile.get("verifiedClubId"), profile)
+    ids = [as_oid(profile["verifiedClubId"])] if verified_access else visible_club_ids(db, profile)
+    query = {}
+    if profile["role"] != Role.ADMIN.value:
+        query = {"clubId": {"$in": ids}} if verified_access else {
+            "$or": [{"profileId": as_oid(profile["_id"])}, {"clubId": {"$in": ids}}]
+        }
+        if profile["role"] == Role.FACULTY.value and ids:
+            related_event_ids = [
+                event["_id"] for event in collection(db, "events").find({
+                    "$or": [{"clubId": {"$in": ids}}, {"coHostIds": {"$in": ids}}]
+                }, {"_id": 1})
+            ]
+            query = {"$or": [
+                {"profileId": as_oid(profile["_id"])},
+                {"clubId": {"$in": ids}},
+                {"eventId": {"$in": related_event_ids}},
+            ]}
     borrows = collection(db, "borrows")
     borrows.update_many(
         {**query, "status": "borrowed", "dueDate": {"$lt": datetime.now(timezone.utc)}},
@@ -273,14 +438,24 @@ def list_borrows(request: Request, profile=Depends(current_profile)):
     populate_many(db, records, [
         ("equipmentId", "equipment", ["name", "clubId"]),
         ("clubId", "clubs", ["name"]),
+        ("eventId", "events", ["title", "eventDate"]),
         ("profileId", "profiles", ["name", "email"]),
+        ("mentorReviewedBy", "profiles", ["name"]),
+        ("studentAffairsReviewedBy", "profiles", ["name"]),
     ])
+    for item in records:
+        if item.get("mentorApprovals"):
+            populate_many(db, item["mentorApprovals"], [
+                ("clubId", "clubs", ["name"]),
+                ("mentorId", "profiles", ["name"]),
+            ])
+    populate_review_history(db, records)
     return [serialize_document(item) for item in records]
 
 
 @router.post("/equipment-borrows", status_code=201)
 def request_borrow(request: Request, body: dict, profile=Depends(current_profile)):
-    require_fields(body, ["equipmentId", "clubId", "dueDate"])
+    require_fields(body, ["equipmentId", "clubId", "eventId", "dueDate"])
     due_date = parse_date(body["dueDate"], "Choose a due date in the future.")
     if due_date <= datetime.now(timezone.utc):
         raise HTTPException(status_code=400, detail="Choose a due date in the future.")
@@ -289,25 +464,39 @@ def request_borrow(request: Request, body: dict, profile=Depends(current_profile
     club = collection(db, "clubs").find_one({"_id": club_id})
     if not club:
         raise HTTPException(status_code=404, detail="Club not found.")
-    if not club.get("mentor"):
+    if not (club.get("mentor") or club.get("mentorIds")):
         raise HTTPException(status_code=409, detail="Assign a faculty mentor to this club before requesting equipment.")
     membership = active_membership(db, club_id, profile["_id"])
-    if not membership or membership.get("position") != "president":
-        raise HTTPException(status_code=403, detail="Only this club’s president can request equipment borrowing approval.")
+    if not is_executive(membership) and not has_verified_club_access(db, club_id, profile):
+        raise HTTPException(status_code=403, detail="Only active club executives can request equipment borrowing approval.")
+    event_id = as_oid(body["eventId"], "eventId")
+    event = collection(db, "events").find_one({"_id": event_id})
+    if not event or not event_involves_club(event, club_id):
+        raise HTTPException(status_code=404, detail="Choose an event hosted by this club.")
     equipment_id = as_oid(body["equipmentId"], "equipmentId")
     equipment = collection(db, "equipment").find_one({"_id": equipment_id, "clubId": club_id})
     if not equipment:
         raise HTTPException(status_code=404, detail="Equipment not found in this club.")
     if equipment.get("availableQuantity", 0) < 1:
         raise HTTPException(status_code=409, detail="This equipment is unavailable.")
+    purpose = body.get("purpose", "")
+    if not isinstance(purpose, str):
+        raise HTTPException(status_code=400, detail="Equipment request purpose must be text.")
+    purpose = purpose.strip()
+    if len(purpose) > 1000:
+        raise HTTPException(status_code=400, detail="Equipment request purpose must be no more than 1000 characters.")
     return insert(db, "borrows", {
         "equipmentId": equipment_id,
         "clubId": club_id,
+        "eventId": event_id,
+        "mentorApprovals": mentor_approval_assignments(db, event),
         "profileId": as_oid(profile["_id"]),
+        "purpose": purpose,
         "dueDate": due_date,
         "borrowDate": datetime.now(timezone.utc),
         "status": "mentor_pending",
         "rejectionFeedback": "",
+        "reviewHistory": [],
     })
 
 
@@ -324,14 +513,27 @@ def approve_borrow(request: Request, identity: str, body: dict, profile=Depends(
     borrow = borrows.find_one({"_id": as_oid(identity)})
     if not borrow:
         raise HTTPException(status_code=404, detail="Equipment request not found.")
-    club = collection(db, "clubs").find_one({"_id": borrow["clubId"]})
-    mentor_review = borrow.get("status") == "mentor_pending" and str((club or {}).get("mentor", "")) == profile["_id"]
-    affairs_review = borrow.get("status") == "student_affairs_pending" and profile["role"] == Role.ADMIN.value
+    mentor_review = False
+    mentors_complete = False
+    if borrow.get("status") == "mentor_pending":
+        if not borrow.get("mentorApprovals"):
+            event_id = borrow.get("eventId")
+            event = collection(db, "events").find_one({"_id": event_id}) if event_id else None
+            if event_id and not event:
+                raise HTTPException(status_code=404, detail="The event for this equipment request no longer exists.")
+            borrow["mentorApprovals"] = mentor_approval_assignments(
+                db, event or {"clubId": borrow["clubId"]}
+            )
+        if profile["role"] == Role.FACULTY.value:
+            mentor_review, mentors_complete = review_mentor_assignment(
+                borrow, profile["_id"], body["status"], datetime.now(timezone.utc)
+            )
+    affairs_review = borrow.get("status") == "student_affairs_pending" and is_student_affairs(profile)
     if not mentor_review and not affairs_review:
         raise HTTPException(status_code=403, detail="This equipment request is not awaiting your approval.")
     if mentor_review:
         borrow["mentorReviewedBy"] = as_oid(profile["_id"])
-        borrow["status"] = "rejected" if rejected else "student_affairs_pending"
+        borrow["status"] = "rejected" if rejected else "student_affairs_pending" if mentors_complete else "mentor_pending"
         if rejected:
             borrow["rejectionStage"] = "mentor"
     elif rejected:
@@ -350,6 +552,10 @@ def approve_borrow(request: Request, identity: str, body: dict, profile=Depends(
         borrow["status"] = "borrowed"
     borrow["rejectionFeedback"] = str(body.get("rejectionFeedback", "")).strip() if rejected else ""
     borrow["updatedAt"] = datetime.now(timezone.utc)
+    stage = "mentor" if mentor_review else "student_affairs"
+    borrow.setdefault("reviewHistory", []).append(review_history_entry(
+        profile, body["status"], stage, borrow["rejectionFeedback"], borrow["updatedAt"]
+    ))
     collection(db, "borrows").replace_one({"_id": borrow["_id"]}, borrow)
     return serialize_document(borrow)
 
@@ -362,7 +568,12 @@ def return_borrow(request: Request, identity: str, profile=Depends(current_profi
     if not borrow:
         raise HTTPException(status_code=404, detail="Equipment request not found.")
     membership = active_membership(db, borrow["clubId"], profile["_id"])
-    if profile["role"] != Role.ADMIN.value and str(borrow.get("profileId")) != profile["_id"] and not membership:
+    if (
+        profile["role"] != Role.ADMIN.value
+        and str(borrow.get("profileId")) != profile["_id"]
+        and not membership
+        and not has_verified_club_access(db, borrow["clubId"], profile)
+    ):
         raise HTTPException(status_code=403, detail="Not allowed to return this equipment.")
     returned = borrows.find_one_and_update(
         {"_id": borrow["_id"], "status": {"$in": ["borrowed", "overdue"]}},
@@ -379,6 +590,8 @@ def return_borrow(request: Request, identity: str, profile=Depends(current_profi
 def list_messages(request: Request, club_identity: str, group: str = "members", profile=Depends(current_profile)):
     db = request.app.state.db
     club_id = as_oid(club_identity, "clubId")
+    if profile.get("verifiedClubId") and not has_verified_club_access(db, club_id, profile):
+        raise HTTPException(status_code=403, detail="A verified club session can only access its club chat.")
     group = "office_bearers" if group == "office_bearers" else "members"
     membership = active_membership(db, club_id, profile["_id"])
     if not membership and profile["role"] != Role.ADMIN.value:
@@ -400,6 +613,8 @@ def send_message(request: Request, club_identity: str, body: dict, profile=Depen
         raise HTTPException(status_code=400, detail="Invalid chat group.")
     db = request.app.state.db
     club_id = as_oid(club_identity, "clubId")
+    if profile.get("verifiedClubId") and not has_verified_club_access(db, club_id, profile):
+        raise HTTPException(status_code=403, detail="A verified club session can only access its club chat.")
     membership = active_membership(db, club_id, profile["_id"])
     if not membership and profile["role"] != Role.ADMIN.value:
         raise HTTPException(status_code=403, detail="Join this club to send a message.")
@@ -422,9 +637,16 @@ def send_message(request: Request, club_identity: str, body: dict, profile=Depen
 @router.get("/reports/summary")
 def report_summary(request: Request, profile=Depends(current_profile)):
     db = request.app.state.db
-    ids = visible_club_ids(db, profile)
+    verified_access = has_verified_club_access(db, profile.get("verifiedClubId"), profile)
+    if profile["role"] == Role.COMMITTEE.value and has_office_bearer_membership(db, profile["_id"]) and not verified_access:
+        raise HTTPException(status_code=403, detail="The club report dashboard is available to mentors and Student Affairs.")
+    ids = [as_oid(profile["verifiedClubId"])] if verified_access else visible_club_ids(db, profile)
     ids_query = {"$in": ids}
-    clubs_count = collection(db, "clubs").count_documents({}) if profile["role"] == Role.ADMIN.value else len(ids)
+    clubs_count = (
+        collection(db, "clubs").count_documents({"organizationType": {"$ne": "event_organizer"}})
+        if profile["role"] == Role.ADMIN.value
+        else len(ids)
+    )
     events_count = collection(db, "events").count_documents({"clubId": ids_query})
     members_count = collection(db, "members").count_documents({"clubId": ids_query})
     pending_apps = collection(db, "applications").count_documents({"clubId": ids_query, "status": "pending"})
@@ -433,13 +655,13 @@ def report_summary(request: Request, profile=Depends(current_profile)):
     allocated_total = sum(item.get("totalAllocated", 0) for item in budgets)
     spent_total = sum(item.get("totalSpent", 0) for item in budgets)
     report_ids = (
-        [item["_id"] for item in collection(db, "clubs").find({}, {"_id": 1})]
+        [item["_id"] for item in collection(db, "clubs").find({"organizationType": {"$ne": "event_organizer"}}, {"_id": 1})]
         if profile["role"] == Role.ADMIN.value
-        else visible_club_ids(db, profile, OFFICE_BEARER_POSITIONS)
+        else ids if verified_access else visible_club_ids(db, profile, OFFICE_BEARER_POSITIONS)
     )
     clubs = list(collection(db, "clubs").find({"_id": {"$in": report_ids}}, {"name": 1, "category": 1}).sort("name", 1))
     reports = []
-    has_budget_access = profile["role"] in (Role.ADMIN.value, Role.FACULTY.value)
+    has_budget_access = profile["role"] in (Role.ADMIN.value, Role.FACULTY.value) or verified_access
     for club in clubs:
         club_id = club["_id"]
         budget = next(iter(collection(db, "budgets").find({"clubId": club_id}).sort("academicYear", -1).limit(1)), None)
@@ -450,6 +672,7 @@ def report_summary(request: Request, profile=Depends(current_profile)):
             "category": club.get("category"),
             "members": collection(db, "members").count_documents({"clubId": club_id}),
             "events": collection(db, "events").count_documents({"clubId": club_id}),
+            "reportsSubmitted": collection(db, "event_reports").count_documents({"clubId": club_id}),
             "pendingApplications": collection(db, "applications").count_documents({"clubId": club_id, "status": "pending"}),
             "announcements": collection(db, "announcements").count_documents({"clubId": club_id}),
             "allocated": (budget or {}).get("totalAllocated", 0) if may_view_budget else 0,
@@ -462,6 +685,7 @@ def report_summary(request: Request, profile=Depends(current_profile)):
         "members": members_count,
         "pendingApplications": pending_apps,
         "equipment": equipment_count,
+        "reportsSubmitted": collection(db, "event_reports").count_documents({"clubId": ids_query}),
         "allocated": allocated_total if may_view_all_budgets else 0,
         "spent": spent_total if may_view_all_budgets else 0,
         "clubReports": reports,

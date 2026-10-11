@@ -1,26 +1,31 @@
 from datetime import datetime, timezone
+import argparse
 
 from .config import settings
 from .database import connect_database, migrate_legacy_data
 
 
-def seed():
+def seed(demo=False):
+    if not demo:
+        raise RuntimeError("Sample data seeding requires the explicit --demo flag.")
     if not settings.mongo_uri:
-        raise RuntimeError("MONGO_URI is required to seed my AMRITA.")
+        raise RuntimeError("MONGO_URI is required to seed Amrita Sangam.")
     client, db = connect_database(settings.mongo_uri)
     try:
         migrate_legacy_data(db, settings.icts_email)
         venues = db["venues"]
         auditorium = venues.find_one_and_update(
             {"name": "Main Auditorium"},
-            {"$setOnInsert": {"capacity": 500, "location": "Academic Block A", "isAvailable": True,
+            {"$set": {"isDemoData": True},
+             "$setOnInsert": {"capacity": 500, "location": "Academic Block A", "isAvailable": True,
                               "createdAt": datetime.now(timezone.utc), "updatedAt": datetime.now(timezone.utc)}},
             upsert=True,
             return_document=True,
         )
         tech_lab = venues.find_one_and_update(
             {"name": "Innovation Lab"},
-            {"$setOnInsert": {"capacity": 60, "location": "Computer Science Department", "isAvailable": True,
+            {"$set": {"isDemoData": True},
+             "$setOnInsert": {"capacity": 60, "location": "Computer Science Department", "isAvailable": True,
                               "createdAt": datetime.now(timezone.utc), "updatedAt": datetime.now(timezone.utc)}},
             upsert=True,
             return_document=True,
@@ -29,7 +34,8 @@ def seed():
         clubs = db["clubs"]
         community = clubs.find_one_and_update(
             {"name": "Campus Connect"},
-            {"$setOnInsert": {
+            {"$set": {"isDemoData": True},
+             "$setOnInsert": {
                 "description": "Bring students together through campus-wide experiences, volunteering, and community.",
                 "category": "Community", "clubType": "non_technical", "recruitmentOpen": True,
                 "foundedDate": datetime.now(timezone.utc), "createdAt": datetime.now(timezone.utc),
@@ -40,7 +46,8 @@ def seed():
         )
         tech_club = clubs.find_one_and_update(
             {"name": "Microsoft Student Club"},
-            {"$setOnInsert": {
+            {"$set": {"isDemoData": True},
+             "$setOnInsert": {
                 "description": "A student-led technology community for workshops, hackathons, and emerging ideas.",
                 "category": "Technology", "clubType": "technical", "recruitmentOpen": True,
                 "foundedDate": datetime.now(timezone.utc), "createdAt": datetime.now(timezone.utc),
@@ -69,7 +76,8 @@ def seed():
         for event in seed_events:
             events.update_one(
                 {"title": event["title"], "clubId": event["clubId"]},
-                {"$setOnInsert": {
+                {"$set": {"isDemoData": True},
+                 "$setOnInsert": {
                     **event, "status": "approved", "registeredCount": 0,
                     "createdAt": datetime.now(timezone.utc), "updatedAt": datetime.now(timezone.utc),
                 }},
@@ -78,7 +86,8 @@ def seed():
         for club_id, allocated, spent in ((tech_club["_id"], 50000, 12500), (community["_id"], 80000, 45000)):
             db["clubbudgets"].update_one(
                 {"clubId": club_id, "academicYear": "2026-2027"},
-                {"$setOnInsert": {
+                {"$set": {"isDemoData": True},
+                 "$setOnInsert": {
                     "totalAllocated": allocated, "totalSpent": spent,
                     "createdAt": datetime.now(timezone.utc), "updatedAt": datetime.now(timezone.utc),
                 }},
@@ -91,7 +100,8 @@ def seed():
         for club_id, name, description, quantity in equipment:
             db["equipment"].update_one(
                 {"clubId": club_id, "name": name},
-                {"$setOnInsert": {
+                {"$set": {"isDemoData": True},
+                 "$setOnInsert": {
                     "description": description, "totalQuantity": quantity, "availableQuantity": quantity,
                     "condition": "good", "createdAt": datetime.now(timezone.utc), "updatedAt": datetime.now(timezone.utc),
                 }},
@@ -104,16 +114,19 @@ def seed():
         for club_id, title, content, priority in announcements:
             db["announcements"].update_one(
                 {"clubId": club_id, "title": title},
-                {"$setOnInsert": {
+                {"$set": {"isDemoData": True},
+                 "$setOnInsert": {
                     "content": content, "priority": priority, "postedDate": datetime.now(timezone.utc),
                     "createdAt": datetime.now(timezone.utc), "updatedAt": datetime.now(timezone.utc),
                 }},
                 upsert=True,
             )
-        print("my AMRITA sample data is ready. Existing data was preserved.")
+        print("Amrita Sangam sample data is ready. Existing data was preserved.")
     finally:
         client.close()
 
 
 if __name__ == "__main__":
-    seed()
+    parser = argparse.ArgumentParser(description="Seed clearly labeled Amrita Sangam demo data.")
+    parser.add_argument("--demo", action="store_true", help="Confirm that sample data should be added.")
+    seed(demo=parser.parse_args().demo)

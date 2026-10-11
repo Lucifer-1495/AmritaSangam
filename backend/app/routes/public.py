@@ -2,7 +2,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from ..database import serialize_document
-from ..services.common import collection, populate_many
+from ..services.common import collection, populate_club_mentors, populate_many
 
 
 router = APIRouter()
@@ -23,8 +23,8 @@ def health(request: Request):
 @router.get("/clubs")
 def list_clubs(request: Request):
     db = request.app.state.db
-    clubs = list(collection(db, "clubs").find().sort("name", 1))
-    populate_many(db, clubs, [("mentor", "profiles", ["name", "email"])])
+    clubs = list(collection(db, "clubs").find({"organizationType": {"$ne": "event_organizer"}}).sort("name", 1))
+    populate_club_mentors(db, clubs)
     return [serialize_document(club) for club in clubs]
 
 
@@ -37,6 +37,11 @@ def list_events(request: Request):
             ("clubId", "clubs", ["name"]),
             ("venueId", "venues", ["name", "location"]),
         ])
+        event["coHostIds"] = [
+            collection(db, "clubs").find_one({"_id": identity}, {"name": 1})
+            for identity in event.get("coHostIds", [])
+        ]
+        event["coHostIds"] = [host for host in event["coHostIds"] if host]
         event["registeredCount"] = collection(db, "registrations").count_documents({
             "eventId": event["_id"], "status": {"$ne": "cancelled"}
         })

@@ -27,4 +27,8 @@ COLLECTIONS = {
     "event_reports": "eventreports",
     "messages": "clubmessages",
     "counters": "counters",
+    "club_credentials": "clubcredentials",
+    "club_login_challenges": "clubloginchallenges",
+    "notifications": "notifications",
+    "credential_requests": "clubcredentialchangerequests",
 }

@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ArrowDownLeft, ArrowRight, ArrowUpRight, BarChart3, Bell, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight,
-  CircleHelp, Clock3, Compass, CreditCard, FolderKanban, Gauge, HandCoins,
-  Laptop, LogOut, Menu, Megaphone, Moon, Plus, Search, ShieldCheck, Sparkles, Sun, Users,
-  WalletCards, Download, X, UserRound, KeyRound, Camera, Trash2 } from 'lucide-react';
+  ArrowRight, BarChart3, Bell, CalendarDays, Check, ChevronDown, ChevronLeft, ChevronRight,
+  CircleHelp, Clock3, Compass, FolderKanban, Gauge,
+  Laptop, LogOut, Menu, Megaphone, Moon, Plus, Search, ShieldCheck, Sun, Users,
+  WalletCards, Download, X, UserRound, KeyRound, Camera, Trash2, Pencil } from 'lucide-react';
 import { api, apiDownload } from '../services/api';
 import PortalBrand from '../components/PortalBrand';
 import '../App.css';
@@ -20,13 +20,14 @@ const allNavigation = [
   { id: 'reports', label: 'Reports', icon: BarChart3 },
   { id: 'eventReports', label: 'Event reports', icon: FolderKanban },
   { id: 'announcements', label: 'Announcements', icon: Megaphone },
+  { id: 'credentialRequests', label: 'Club login changes', icon: KeyRound },
   { id: 'profile', label: 'My profile', icon: UserRound },
 ];
 
 const initialData = {
   clubs: [], managedClubs: [], memberships: [], venues: [], events: [], announcements: [], applications: [],
-  registrations: [], participation: [], equipment: [], funding: [], transactions: [], borrows: [], profiles: [], eventReports: [],
-  summary: { clubs: 0, events: 0, members: 0, pendingApplications: 0, allocated: 0, spent: 0, equipment: 0, clubReports: [] },
+  eventOrganizers: [], registrations: [], participation: [], equipment: [], funding: [], transactions: [], borrows: [], profiles: [], eventReports: [], credentialRequests: [], notifications: [],
+  summary: { clubs: 0, events: 0, members: 0, pendingApplications: 0, allocated: 0, spent: 0, equipment: 0, reportsSubmitted: 0, clubReports: [] },
 };
 
 const roleNames = {
@@ -48,9 +49,99 @@ const trackNames = {
   mentor: 'Faculty mentor',
   president: 'Club president',
   'office-bearer': 'Office bearer',
+  'verified-office-bearer': 'Club account',
   executive: 'Club executive',
   student: 'Student',
 };
+
+const accountDepartments = {
+  CSE: { schoolCode: 'SC', sections: ['A', 'B', 'C'] },
+  AIE: { schoolCode: 'SC', sections: ['D', 'E', 'F'] },
+  AID: { schoolCode: 'SC', sections: ['G'] },
+  ECE: { schoolCode: 'EN', sections: ['H', 'I', 'J'] },
+  EAC: { schoolCode: 'EN', sections: ['K'] },
+  EEE: { schoolCode: 'EN', sections: ['L'] },
+  ELC: { schoolCode: 'EN', sections: ['M'] },
+  MEE: { schoolCode: 'EN', sections: ['N'] },
+};
+
+const facultyDepartments = ['ECE', 'EEE', 'MEE', 'MAT', 'PHY', 'CHE', 'ENG', 'CSE', 'MBA', 'CIR'];
+
+const authorityDesignations = ['Dean', 'Associate Dean', 'Head of Department', 'Director', 'Other'];
+
+const closureReportOptions = {
+  promotion: ['LinkedIn Page/URL', 'Link to photos and videos'],
+  eventCategory: ['Flagship', 'Independent', 'Club Collaboration', 'Coordinated with another event'],
+  programType: [
+    'Level 1: Expert Talks', 'Level 1: Mentoring Sessions', 'Level 1: Performances',
+    'Level 2: Workshop', 'Level 2: Seminar', 'Level 2: Conference',
+    'Level 3: Exhibitions & Demos', 'Level 3: Competitions', 'Level 3: Visits to external locations',
+    'Level 4: Cultural Fest', 'Level 4: Challenges', 'Level 4: Hackathons',
+  ],
+  programTheme: [
+    'Literary & Communication', 'Cultural & Arts', 'Social & Community Engagement',
+    'Leadership & Management', 'Celebrations & Recreation', 'Film, Media & Content',
+    'Wellness, Ethics & Life Skills', 'Sports and Fitness', 'Commemorative Days and Events',
+  ],
+  sdgAlignment: [
+    'SDG 1 — No Poverty', 'SDG 2 — Zero Hunger', 'SDG 3 — Good Health and Well-being',
+    'SDG 4 — Quality Education', 'SDG 5 — Gender Equality', 'SDG 6 — Clean Water and Sanitation',
+    'SDG 7 — Affordable and Clean Energy', 'SDG 8 — Decent Work and Economic Growth',
+    'SDG 9 — Industry, Innovation and Infrastructure', 'SDG 10 — Reduced Inequalities',
+    'SDG 11 — Sustainable Cities and Communities', 'SDG 12 — Responsible Consumption and Production',
+    'SDG 13 — Climate Action', 'SDG 14 — Life Below Water', 'SDG 15 — Life on Land',
+    'SDG 16 — Peace, Justice and Strong Institutions', 'SDG 17 — Partnerships for the Goals',
+  ],
+  sessionMode: ['Online', 'Offline', 'Hybrid'],
+  resourcePerson: ['External', 'Internal', 'Alumni'],
+};
+
+const completionReportFields = [
+  ['duration', 'Duration of the activity (hours/days)', 'text'],
+  ['startDate', 'Start date', 'date'],
+  ['endDate', 'End date', 'date'],
+  ['expenditure', 'Expenditure (figure & words)', 'text'],
+  ['resourcePersonDetails', 'Resource person details', 'textarea'],
+  ['discussionHighlights', 'Discussion highlights of resource person & institutional leadership', 'textarea'],
+  ['objectiveAchieved', 'Program objective achieved', 'textarea'],
+  ['skillsAcquired', 'Skill acquired', 'textarea'],
+  ['detailedReport', 'Detailed report (maximum 1000 words)', 'textarea'],
+  ['impactAnalysis', 'Impact analysis', 'textarea'],
+];
+const reportImageFields = [
+  ['brochure', 'Brochure/Flyer'],
+  ['photograph1', 'Photograph 1'],
+  ['photograph2', 'Photograph 2'],
+  ['photograph3', 'Photograph 3'],
+  ['photograph4', 'Photograph 4'],
+];
+
+function buildReportDetails(formData, images = {}, previous = {}) {
+  const details = {};
+  Object.keys(closureReportOptions).forEach((field) => {
+    details[field] = {
+      selected: formData.getAll(`report_${field}`),
+      remark: String(formData.get(`report_${field}_remark`) || '').trim(),
+    };
+  });
+  details.participants = {
+    selected: formData.getAll('report_participants'),
+    internalCount: String(formData.get('report_internalCount') || ''),
+    externalCount: String(formData.get('report_externalCount') || ''),
+    remark: String(formData.get('report_participants_remark') || '').trim(),
+  };
+  details.activityCompletion = Object.fromEntries(completionReportFields.map(([field]) => [field, {
+    value: String(formData.get(`report_${field}`) || '').trim(),
+    remark: String(formData.get(`report_${field}_remark`) || '').trim(),
+  }]));
+  reportImageFields.forEach(([field]) => {
+    details.activityCompletion[field] = {
+      image: images[field] || previous.activityCompletion?.[field]?.image || '',
+      remark: String(formData.get(`report_${field}_remark`) || '').trim(),
+    };
+  });
+  return details;
+}
 
 function isOfficeBearerPosition(membership) {
   return membership.membershipStatus !== 'pending'
@@ -58,32 +149,53 @@ function isOfficeBearerPosition(membership) {
       || (membership.position === 'executive' && membership.officeBearerGroup));
 }
 
-function profileTrackLabel(profile, track) {
+function isClubMentor(club, profileId) {
+  const identities = [
+    club?.mentor?._id || club?.mentor,
+    ...(club?.mentorIds || []).map((identity) => identity?._id || identity),
+    ...(club?.mentors || []).map((mentor) => mentor?._id || mentor),
+  ];
+  return identities.some((identity) => identity && String(identity) === String(profileId));
+}
+
+function hasPendingMentorApproval(record, profileId) {
+  if (record.mentorApprovals?.length) {
+    return record.mentorApprovals.some((approval) =>
+      approval.status === 'pending'
+      && String(approval.mentorId?._id || approval.mentorId) === String(profileId));
+  }
+  return isClubMentor(record.clubId, profileId);
+}
+
+function profileTrackLabel(profile, track, verifiedClubName) {
   if (profile.role === 'college_admin') {
     const adminLabel = profile.adminType === 'other_authority'
       ? profile.designation || adminTypeNames.other_authority
       : adminTypeNames[profile.adminType] || adminTypeNames.student_affairs;
     return `${adminLabel} admin`;
   }
+  if (track === 'verified-office-bearer' && verifiedClubName) return `${verifiedClubName} account`;
   return trackNames[track] || roleNames[profile.role] || profile.role;
 }
 
-function dashboardTrack(role, memberships) {
+function dashboardTrack(role, memberships, hasVerifiedClubAccess) {
   if (role === 'college_admin') return 'student-affairs';
   if (role === 'faculty_coordinator') return 'mentor';
-  if (memberships.some((membership) => membership.membershipStatus !== 'pending' && membership.position === 'president')) return 'president';
-  if (memberships.some(isOfficeBearerPosition)) return 'office-bearer';
+  if (hasVerifiedClubAccess) return 'verified-office-bearer';
+  if (memberships.some(isOfficeBearerPosition)) return 'executive';
+  if (memberships.some((membership) => membership.membershipStatus === 'active' && membership.position === 'president')) return 'executive';
   if (memberships.some((membership) => membership.membershipStatus !== 'pending' && membership.position === 'executive')) return 'executive';
   return 'student';
 }
 
 function navigationFor(track) {
   const visible = {
-    'student-affairs': ['overview', 'clubs', 'events', 'members', 'equipment', 'funding', 'reports', 'eventReports', 'announcements', 'profile'],
+    'student-affairs': ['overview', 'clubs', 'events', 'equipment', 'funding', 'reports', 'eventReports', 'announcements', 'credentialRequests', 'profile'],
     mentor: ['overview', 'clubs', 'events', 'applications', 'members', 'equipment', 'funding', 'eventReports', 'announcements', 'profile'],
     president: ['overview', 'clubs', 'events', 'applications', 'members', 'chats', 'equipment', 'funding', 'reports', 'eventReports', 'announcements', 'profile'],
-    'office-bearer': ['overview', 'clubs', 'events', 'applications', 'members', 'chats', 'funding', 'reports', 'announcements', 'profile'],
-    executive: ['overview', 'clubs', 'events', 'chats', 'announcements', 'profile'],
+    'office-bearer': ['overview', 'clubs', 'events', 'applications', 'members', 'chats', 'funding', 'reports', 'eventReports', 'announcements', 'profile'],
+    'verified-office-bearer': ['overview', 'clubs', 'events', 'equipment', 'funding', 'reports', 'eventReports'],
+    executive: ['overview', 'clubs', 'events', 'applications', 'chats', 'announcements', 'profile'],
     student: ['overview', 'clubs', 'events', 'applications', 'announcements', 'profile'],
   }[track];
   return allNavigation.filter(({ id }) => visible.includes(id));
@@ -95,6 +207,14 @@ function formatDate(value, options = { month: 'short', day: 'numeric', year: 'nu
   return Number.isNaN(date.getTime()) ? 'Date to be announced' : date.toLocaleDateString(undefined, options);
 }
 
+function toDateTimeInput(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return localDate.toISOString().slice(0, 16);
+}
+
 function formatMoney(value) {
   return new Intl.NumberFormat('en-IN', {
     style: 'currency', currency: 'INR', maximumFractionDigits: 0,
@@ -103,6 +223,27 @@ function formatMoney(value) {
 
 function statusClass(status) {
   return `status status-${String(status || 'pending').toLowerCase()}`;
+}
+
+function statusMatchesFilter(status, filter) {
+  if (filter === 'all') return true;
+  if (filter === 'pending') return ['pending', 'mentor_pending', 'student_affairs_pending'].includes(status);
+  return status === filter;
+}
+
+function reviewHistoryFor(item) {
+  if (item.reviewHistory?.length) return item.reviewHistory;
+  return [
+    ['mentor', item.mentorReviewedBy],
+    ['student_affairs', item.studentAffairsReviewedBy],
+    ['club', item.reviewedBy],
+  ].filter(([, reviewer]) => reviewer).map(([stage, reviewer]) => ({
+    stage,
+    reviewer,
+    status: item.status,
+    feedback: item.rejectionFeedback || '',
+    reviewedAt: item.updatedAt,
+  }));
 }
 
 function initials(name = '') {
@@ -128,6 +269,50 @@ function loadTheme() {
   }
 }
 
+function loadSeenAnnouncementIds(profileId) {
+  try {
+    const saved = window.localStorage.getItem(`amrita-seen-announcements-${profileId}`);
+    if (!saved) return [];
+    const ids = JSON.parse(saved);
+    return Array.isArray(ids) ? ids.filter((id) => typeof id === 'string') : [];
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'SecurityError') return [];
+    throw error;
+  }
+}
+
+function saveSeenAnnouncementIds(profileId, ids) {
+  try {
+    window.localStorage.setItem(`amrita-seen-announcements-${profileId}`, JSON.stringify(ids));
+    return '';
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'SecurityError') return error.message;
+    throw error;
+  }
+}
+
+function loadChatReadAt(profileId) {
+  try {
+    const saved = window.localStorage.getItem(`amrita-chat-read-at-${profileId}`);
+    if (!saved) return {};
+    const records = JSON.parse(saved);
+    return records && typeof records === 'object' && !Array.isArray(records) ? records : {};
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'SecurityError') return {};
+    throw error;
+  }
+}
+
+function saveChatReadAt(profileId, records) {
+  try {
+    window.localStorage.setItem(`amrita-chat-read-at-${profileId}`, JSON.stringify(records));
+    return '';
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'SecurityError') return error.message;
+    throw error;
+  }
+}
+
 function ThemeToggle({ theme, onToggle, className = '' }) {
   const isDark = theme === 'dark';
   const Icon = isDark ? Sun : Moon;
@@ -143,6 +328,10 @@ function ThemeToggle({ theme, onToggle, className = '' }) {
 function AuthScreen({ onAuthenticated, theme, onToggleTheme }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [otp, setOtp] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [mode, setMode] = useState('login');
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState('');
   const [noticeType, setNoticeType] = useState('error');
@@ -152,7 +341,39 @@ function AuthScreen({ onAuthenticated, theme, onToggleTheme }) {
     setLoading(true);
     setNotice('');
     try {
-      onAuthenticated(await api('/auth/login', { method: 'POST', body: { email, password } }));
+      if (mode === 'login') {
+        try {
+          onAuthenticated(await api('/auth/login', { method: 'POST', body: { email, password } }));
+        } catch (personalError) {
+          if (personalError.status && personalError.status !== 401 && personalError.status !== 400) {
+            throw personalError;
+          }
+          try {
+            onAuthenticated(await api('/auth/club-login', { method: 'POST', body: { email, password } }));
+          } catch (clubError) {
+            throw new Error(clubError.message || 'Incorrect email or password.');
+          }
+        }
+      } else if (mode === 'request-reset') {
+        const result = await api('/auth/password-reset/request', { method: 'POST', body: { email } });
+        setMode('confirm-reset');
+        setNoticeType('ok');
+        setNotice(result.message);
+      } else {
+        if (newPassword.length < 8) throw new Error('New password must be at least 8 characters.');
+        if (newPassword !== confirmPassword) throw new Error('The new passwords do not match.');
+        const result = await api('/auth/password-reset/confirm', {
+          method: 'POST',
+          body: { email, otp, password: newPassword },
+        });
+        setMode('login');
+        setPassword('');
+        setOtp('');
+        setNewPassword('');
+        setConfirmPassword('');
+        setNoticeType('ok');
+        setNotice(result.message);
+      }
     } catch (error) {
       setNoticeType('error');
       setNotice(error.message || 'We could not complete that request.');
@@ -164,17 +385,8 @@ function AuthScreen({ onAuthenticated, theme, onToggleTheme }) {
   return (
     <main className="auth-shell">
       <ThemeToggle theme={theme} onToggle={onToggleTheme} className="auth-theme-toggle" />
-      <section className="auth-story">
+      <section className="auth-story auth-story-brand-only">
         <PortalBrand className="auth-brand" />
-        <div className="story-copy">
-          <h1>YOUR WINDOW TO CAMPUS LIFE</h1>
-          <p>Find your people, show up for the moments that matter, and make campus life your own.</p>
-          <span className="auth-story-divider" />
-        </div>
-        <div className="story-note">
-          <div className="avatar-stack"><span>AK</span><span>RM</span><span>JD</span><b>+</b></div>
-          <span>Good things happen when we do them together.</span>
-        </div>
         <span className="story-orbit orbit-one" /><span className="story-orbit orbit-two" />
       </section>
 
@@ -182,47 +394,94 @@ function AuthScreen({ onAuthenticated, theme, onToggleTheme }) {
         <div className="auth-form-wrap">
           <PortalBrand className="mobile-brand" />
           <div className="login-heading"><h2>LOGIN</h2><span aria-hidden="true"><ArrowRight size={21} /></span></div>
-          <p className="eyebrow">WELCOME BACK</p>
-          <p className="auth-subtitle">Sign in to your campus portal. Your college account gives you access to clubs, events, and student services.</p>
 
           <form className="auth-form" onSubmit={submit}>
-            <label className="field-label">
-              College email
-              <input autoComplete="email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@college.edu" required />
+            {mode === 'confirm-reset' && <p className="modal-intro">Enter the code sent to your email and choose a new password.</p>}
+            <label className="field-label">Username / Email
+              <input autoComplete="username" type="email" value={email} onChange={(event) => setEmail(event.target.value)} required disabled={mode === 'confirm-reset'} />
             </label>
-            <label className="field-label">
-              Password
+            {mode === 'login' && <label className="field-label">Password
               <input autoComplete="current-password" type="password" value={password} onChange={(event) => setPassword(event.target.value)} required />
-            </label>
+            </label>}
+            {mode === 'confirm-reset' && <>
+              <label className="field-label">Email OTP<input inputMode="numeric" autoComplete="one-time-code" value={otp} onChange={(event) => setOtp(event.target.value.replace(/\D/g, '').slice(0, 12))} required /></label>
+              <label className="field-label">New password<input autoComplete="new-password" type="password" minLength={8} value={newPassword} onChange={(event) => setNewPassword(event.target.value)} required /></label>
+              <label className="field-label">Confirm new password<input autoComplete="new-password" type="password" minLength={8} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} required /></label>
+            </>}
             {notice && <div className={`notice notice-${noticeType}`} role="status">{notice}</div>}
             <button className="button button-primary button-wide" type="submit" disabled={loading}>
-              {loading ? 'One moment…' : 'Sign in'}
+              {loading ? 'One moment…' : mode === 'login' ? 'Sign in' : mode === 'request-reset' ? 'Send OTP' : 'Reset password'}
               {!loading && <ArrowRight size={17} />}
             </button>
+            {mode === 'login' && <button className="text-link auth-forgot-link" type="button" onClick={() => { setMode('request-reset'); setNotice(''); }}>Forgot password?</button>}
+            {mode === 'request-reset' && <button className="text-link auth-forgot-link" type="button" onClick={() => { setMode('login'); setNotice(''); }}>Back to sign in</button>}
+            {mode === 'confirm-reset' && <button className="text-link auth-forgot-link" type="button" onClick={() => { setMode('request-reset'); setOtp(''); setNotice(''); }}>Request a new code</button>}
           </form>
 
-          <p className="auth-switch">Need access? Ask Student Affairs to create your college account.</p>
-          <div className="auth-footnote"><ShieldCheck size={15} /> Your account is secured with Supabase Auth.</div>
         </div>
       </section>
     </main>
   );
 }
 
-function Modal({ type, clubs, profiles, venues, selectedClub, profile, onClose, onSubmit, busy }) {
-  const [clubId, setClubId] = useState(selectedClub?._id || clubs[0]?._id || '');
+function Modal({ type, clubs, allClubs, eventOrganizers, profiles, venues, events = [], reportEvents = [], equipmentItems = [], selectedEquipment, selectedClub, selectedEvent, profile, onClose, onSubmit, busy }) {
+  const isEventForm = type === 'event' || type === 'editEvent';
+  const isStudentAffairs = profile.role === 'college_admin' && profile.adminType === 'student_affairs';
+  const availableEventHosts = isStudentAffairs ? eventOrganizers : clubs;
+  const availableCoHosts = isStudentAffairs ? [...allClubs, ...eventOrganizers] : allClubs;
+  const [clubId, setClubId] = useState(selectedEvent?.clubId?._id || selectedEvent?.clubId || selectedClub?._id || availableEventHosts[0]?._id || '');
+  const [coHostIds, setCoHostIds] = useState((selectedEvent?.coHostIds || []).map((host) => host?._id || host));
+  const [eventType, setEventType] = useState(selectedEvent?.eventType || availableEventHosts.find((host) => host._id === (selectedEvent?.clubId?._id || selectedEvent?.clubId || availableEventHosts[0]?._id))?.clubType || 'non_technical');
+  const [reportEventId, setReportEventId] = useState(reportEvents[0]?._id || '');
+  const [borrowEquipmentId, setBorrowEquipmentId] = useState(selectedEquipment?._id || '');
+  const [requestEventId, setRequestEventId] = useState('');
   const [formError, setFormError] = useState('');
   const [logoPreview, setLogoPreview] = useState(selectedClub?.logoUrl || '');
-  const [posterPreview, setPosterPreview] = useState('');
-  const [eventStart, setEventStart] = useState('');
-  const [eventEnd, setEventEnd] = useState('');
+  const [posterPreview, setPosterPreview] = useState(selectedEvent?.posterUrl || '');
+  const [reportImages, setReportImages] = useState({});
+  const [eventStart, setEventStart] = useState(toDateTimeInput(selectedEvent?.eventDate));
+  const [eventEnd, setEventEnd] = useState(toDateTimeInput(selectedEvent?.endDate));
   const [venueAvailability, setVenueAvailability] = useState([]);
   const [availabilityError, setAvailabilityError] = useState('');
   const [checkingAvailability, setCheckingAvailability] = useState(false);
+  const [mentorDropdownOpen, setMentorDropdownOpen] = useState(false);
+  const [mentorSearch, setMentorSearch] = useState('');
+  const [selectedMentorIds, setSelectedMentorIds] = useState(
+    (selectedClub?.mentorIds || []).map((identity) => String(identity?._id || identity)),
+  );
+  const mentorPickerRef = useRef(null);
   const applicationClub = clubs.find((club) => club._id === clubId);
+  const selectedHost = availableEventHosts.find((host) => host._id === clubId);
+  const requestClubId = type === 'borrow'
+    ? String(equipmentItems.find((item) => item._id === borrowEquipmentId)?.clubId?._id || equipmentItems.find((item) => item._id === borrowEquipmentId)?.clubId || '')
+    : clubId;
+  const requestEvents = events.filter((item) =>
+    String(item.clubId?._id || item.clubId) === String(requestClubId)
+    || item.coHostIds?.some((host) => String(host?._id || host) === String(requestClubId)));
+  const defaultDueDate = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+  const facultyMentors = profiles.filter((person) => person.role === 'faculty_coordinator');
+  const filteredMentors = facultyMentors.filter((person) =>
+    `${person.name} ${person.facultyId || ''} ${person.email || ''}`.toLowerCase().includes(mentorSearch.trim().toLowerCase()),
+  );
 
   useEffect(() => {
-    if (type !== 'event' || !eventStart || !eventEnd || new Date(eventEnd) <= new Date(eventStart)) {
+    if (!mentorDropdownOpen) return undefined;
+    const closeOnOutsideClick = (event) => {
+      if (!mentorPickerRef.current?.contains(event.target)) setMentorDropdownOpen(false);
+    };
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') setMentorDropdownOpen(false);
+    };
+    document.addEventListener('pointerdown', closeOnOutsideClick);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('pointerdown', closeOnOutsideClick);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [mentorDropdownOpen]);
+
+  useEffect(() => {
+    if (!isEventForm || !eventStart || !eventEnd || new Date(eventEnd) <= new Date(eventStart)) {
       setVenueAvailability([]);
       setAvailabilityError('');
       setCheckingAvailability(false);
@@ -232,25 +491,61 @@ function Modal({ type, clubs, profiles, venues, selectedClub, profile, onClose, 
     setVenueAvailability([]);
     setCheckingAvailability(true);
     setAvailabilityError('');
-    api(`/venues/availability?eventDate=${encodeURIComponent(new Date(eventStart).toISOString())}&endDate=${encodeURIComponent(new Date(eventEnd).toISOString())}`)
+    const exclude = selectedEvent?._id ? `&excludeEventId=${encodeURIComponent(selectedEvent._id)}` : '';
+    api(`/venues/availability?eventDate=${encodeURIComponent(new Date(eventStart).toISOString())}&endDate=${encodeURIComponent(new Date(eventEnd).toISOString())}${exclude}`)
       .then((result) => { if (active) setVenueAvailability(result); })
       .catch((error) => { if (active) setAvailabilityError(error.message); })
       .finally(() => { if (active) setCheckingAvailability(false); });
     return () => { active = false; };
-  }, [eventEnd, eventStart, type]);
+  }, [eventEnd, eventStart, isEventForm, selectedEvent?._id]);
 
   const submit = async (event) => {
     event.preventDefault();
     setFormError('');
-    const values = Object.fromEntries(new FormData(event.currentTarget).entries());
+    const formData = new FormData(event.currentTarget);
+    const values = Object.fromEntries(formData.entries());
     try {
-      if (isClubForm) values.logoUrl = logoPreview;
-      if (type === 'event') {
+      if (isClubForm) {
+        values.logoUrl = logoPreview;
+        values.mentorIds = selectedMentorIds;
+      }
+      if (isEventForm) {
         values.posterUrl = posterPreview;
         values.eventDate = new Date(eventStart).toISOString();
         values.endDate = new Date(eventEnd).toISOString();
+        values.eventType = eventType;
+        if (eventType === 'technical') {
+          const detailFields = [
+            'eventCategory', 'programDrivenBy', 'quarter', 'programLevel', 'programTheme',
+            'presidingOfficial', 'resourcePersonType', 'resourcePersonDetails', 'programDescription', 'internalParticipants',
+            'externalParticipants', 'sessionMode', 'durationHours', 'estimatedBudget', 'budgetInWords',
+            'annexures', 'photoLink', 'impactAnalysis',
+          ];
+          values.technicalDetails = Object.fromEntries(detailFields
+            .map((field) => [field, formData.get(`technical-${field}`)])
+            .filter(([, value]) => value !== null && value !== ''));
+          values.technicalDetails.programOutcomes = formData.getAll('technical-programOutcomes');
+          values.technicalDetails.programSpecificOutcomes = formData.getAll('technical-programSpecificOutcomes');
+          values.technicalDetails.sdgGoals = formData.getAll('technical-sdgGoals').map(Number);
+        } else if (type === 'editEvent') {
+          values.technicalDetails = {};
+        }
       }
-      const result = await onSubmit(type, { ...values, clubId });
+      if (type === 'eventReport') {
+        values.eventId = reportEventId;
+        values.reportDetails = buildReportDetails(formData, reportImages);
+      }
+      if (type === 'borrow') {
+        const equipment = equipmentItems.find((item) => item._id === borrowEquipmentId);
+        if (!equipment) throw new Error('Choose an available piece of equipment.');
+        values.equipmentId = equipment._id;
+        values.clubId = equipment.clubId?._id || equipment.clubId;
+        values.eventId = requestEventId;
+        values.dueDate = new Date(`${values.dueDate}T23:59:00`).toISOString();
+      }
+      if (type === 'funding') values.eventId = requestEventId;
+      const submitValues = ['borrow', 'eventReport'].includes(type) ? values : { ...values, clubId, coHostIds };
+      const result = await onSubmit(type, submitValues, type === 'eventReport' ? reportEventId : selectedEvent);
       if (result) setFormError(result);
     } catch (error) {
       setFormError(error.message);
@@ -273,9 +568,25 @@ function Modal({ type, clubs, profiles, venues, selectedClub, profile, onClose, 
     }
   };
 
+  const pickReportImage = async (event, field) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    try {
+      const image = await resizeImage(file, 1400, 'image/jpeg', false);
+      setReportImages((current) => ({ ...current, [field]: image }));
+      setFormError('');
+    } catch (error) {
+      setFormError(error.message);
+    }
+  };
+
   const modalTitles = {
     apply: 'Join the conversation',
     event: 'Create an event',
+    editEvent: 'Edit event details',
+    eventReport: 'Create event report',
+    borrow: 'Request equipment',
     announcement: 'Share an announcement',
     equipment: 'Add club equipment',
     funding: 'Request funding',
@@ -290,14 +601,14 @@ function Modal({ type, clubs, profiles, venues, selectedClub, profile, onClose, 
     <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
       <section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
         <div className="modal-heading">
-          <div><span className="eyebrow">MY AMRITA</span><h2 id="modal-title">{modalTitles[type]}</h2></div>
+          <div><span className="eyebrow">AMRITA SANGAM</span><h2 id="modal-title">{modalTitles[type]}</h2></div>
           <button className="icon-button" onClick={onClose} aria-label="Close dialog"><X size={19} /></button>
         </div>
         <form className="modal-form" onSubmit={submit}>
           {type === 'apply' && <p className="modal-intro">Tell the club a little about what brings you here.</p>}
-          {type !== 'club' && type !== 'editClub' && type !== 'event' && (
+          {type !== 'club' && type !== 'editClub' && !isEventForm && type !== 'eventReport' && type !== 'borrow' && (
             <label className="field-label">Club
-              <select name="clubId" value={clubId} onChange={(event) => setClubId(event.target.value)} required>
+              <select name="clubId" value={clubId} onChange={(event) => { setClubId(event.target.value); setRequestEventId(''); }} required>
                 {clubs.map((club) => <option value={club._id} key={club._id}>{club.name}{club.clubType ? ` · ${club.clubType.replace('_', ' ')}` : ''}</option>)}
               </select>
             </label>
@@ -310,7 +621,52 @@ function Modal({ type, clubs, profiles, venues, selectedClub, profile, onClose, 
             <label className="field-label">Club logo (PNG, optional)<input type="file" accept="image/png" onChange={(event) => pickImage(event, 'logo')} /></label>
             {logoPreview && <div className="media-preview"><img src={logoPreview} alt="Club logo preview" /><button type="button" className="text-link" onClick={() => setLogoPreview('')}>Remove logo</button></div>}
             <label className="field-label">Club type<select name="clubType" defaultValue={selectedClub?.clubType || 'non_technical'} required><option value="technical">Technical</option><option value="non_technical">Non-technical</option></select></label>
-            <label className="field-label">Faculty mentor<select name="mentor" defaultValue={selectedClub?.mentor?._id || selectedClub?.mentor || ''} required><option value="">{profiles.some((person) => person.role === 'faculty_coordinator') ? 'Choose a faculty mentor' : 'ICTS has not created any faculty accounts yet'}</option>{profiles.filter((person) => person.role === 'faculty_coordinator').map((person) => <option key={person._id} value={person._id}>{person.name} · {person.facultyId || person.email}</option>)}</select></label>
+            {(type === 'club' || type === 'editClub') && profile.role === 'college_admin' && <>
+              <label className="field-label">Club shared login email<input name="clubLoginEmail" type="email" autoComplete="off" defaultValue={selectedClub?.clubLoginEmail || ''} /></label>
+              {type === 'club' && <label className="field-label">Club shared login password<input name="clubLoginPassword" type="password" minLength={8} maxLength={256} autoComplete="new-password" /><small>Leave both club login fields blank to configure them later. If you set one, you must set both. Credentials are managed by Supabase Auth.</small></label>}
+              {type === 'editClub' && <>
+                <label className="field-label">Club shared login password<input name="clubLoginPassword" type="password" minLength={8} maxLength={256} autoComplete="new-password" /><small>Leave blank to keep the current password. A new password is managed by Supabase Auth.</small></label>
+                <small className="muted-copy">Leave the email blank to keep the current email.</small>
+              </>}
+            </>}
+            <div className="club-mentor-picker" ref={mentorPickerRef}>
+              <span className="club-mentor-label">Faculty mentors</span>
+              <button
+                className="club-mentor-trigger"
+                type="button"
+                aria-haspopup="dialog"
+                aria-expanded={mentorDropdownOpen}
+                onClick={() => setMentorDropdownOpen((open) => !open)}
+              >
+                <span>{selectedMentorIds.length ? `${selectedMentorIds.length} mentor${selectedMentorIds.length === 1 ? '' : 's'} selected` : 'Select mentors'}</span>
+                <ChevronDown size={15} />
+              </button>
+              {mentorDropdownOpen && <div className="club-mentor-menu" role="dialog" aria-label="Choose faculty mentors">
+                <label className="club-mentor-search">
+                  <Search size={14} />
+                  <input autoFocus type="search" value={mentorSearch} onChange={(event) => setMentorSearch(event.target.value)} placeholder="Search faculty mentors" aria-label="Search faculty mentors" />
+                </label>
+                <div className="club-mentor-options" role="group" aria-label="Faculty mentors">
+                  {filteredMentors.map((person) => (
+                    <label key={person._id}>
+                      <input
+                        type="checkbox"
+                        checked={selectedMentorIds.includes(String(person._id))}
+                        onChange={(event) => setSelectedMentorIds((current) => (
+                          event.target.checked
+                            ? [...current, String(person._id)]
+                            : current.filter((identity) => identity !== String(person._id))
+                        ))}
+                      />
+                      <span>{person.name}<small>{person.facultyId || person.email}</small></span>
+                    </label>
+                  ))}
+                  {!facultyMentors.length && <p>No faculty accounts are available yet. Create a faculty account in ICTS first.</p>}
+                  {facultyMentors.length > 0 && !filteredMentors.length && <p>No mentors match that search.</p>}
+                </div>
+              </div>}
+              <small>Select every faculty mentor assigned to this club.</small>
+            </div>
             <label className="checkbox-label"><input name="recruitmentOpen" type="checkbox" value="true" defaultChecked={selectedClub?.recruitmentOpen ?? true} /> Recruitment is open</label>
           </>}
           {type === 'budget' && <>
@@ -334,24 +690,91 @@ function Modal({ type, clubs, profiles, venues, selectedClub, profile, onClose, 
             <label className="field-label">What would you like to apply for?<select name="requestedPosition"><option value="member">Club membership</option><option value="executive">Executive consideration</option></select></label>
             <label className="field-label">Why would you like to join?<textarea name="reason" required minLength={3} maxLength={2000} rows="4" placeholder="Share what you're curious about…" /></label>
           </>}
-          {type === 'event' && <>
-            <p className="modal-intro">Event type follows the selected club: {clubs.find((club) => club._id === clubId)?.clubType?.replace('_', ' ') || 'club type'}.</p>
-            <label className="field-label">Club hosting this event<select name="clubId" value={clubId} onChange={(event) => setClubId(event.target.value)} required>{clubs.map((club) => <option key={club._id} value={club._id}>{club.name}</option>)}</select></label>
-            <label className="field-label">Event name<input name="title" required maxLength={150} placeholder="Give your event a name" /></label>
-            <label className="field-label">What is it about?<textarea name="description" maxLength={3000} rows="3" placeholder="A few details for people who might come along…" /></label>
+          {isEventForm && <>
+            <label className="field-label">Event type<select name="eventType" value={eventType} disabled={selectedHost?.organizationType !== 'event_organizer'} onChange={(event) => setEventType(event.target.value)}>
+              {selectedHost?.organizationType === 'event_organizer'
+                ? <><option value="non_technical">Non-technical</option><option value="technical">Technical</option></>
+                : <option value={selectedHost?.clubType || 'non_technical'}>{(selectedHost?.clubType || 'non_technical').replace('_', ' ')}</option>}
+            </select>{selectedHost?.organizationType !== 'event_organizer' && <small>Event type is based on the selected club.</small>}</label>
+            {type === 'event' && <label className="field-label">Event host<select name="clubId" value={clubId} onChange={(event) => {
+              const nextHostId = event.target.value;
+              setClubId(nextHostId);
+              setCoHostIds((current) => current.filter((identity) => identity !== nextHostId));
+              const nextHost = availableEventHosts.find((host) => host._id === nextHostId);
+              setEventType(nextHost?.clubType || 'non_technical');
+            }} required>
+              {clubs.length > 0 && !isStudentAffairs && <optgroup label="Clubs">{clubs.map((club) => <option key={club._id} value={club._id}>{club.name} · {club.clubType?.replace('_', ' ')}</option>)}</optgroup>}
+              {eventOrganizers.length > 0 && isStudentAffairs && <optgroup label="Student Affairs-managed organizers">{eventOrganizers.map((organizer) => <option key={organizer._id} value={organizer._id}>{organizer.name}</option>)}</optgroup>}
+            </select></label>}
+            {isEventForm && availableCoHosts.length > 1 && <fieldset className="event-cohost-picker" aria-describedby="event-cohost-help">
+              <legend>Co-hosts (optional)</legend>
+              {allClubs.filter((club) => club._id !== clubId).length > 0 && <div className="event-cohost-group"><strong>Clubs</strong>{allClubs.filter((club) => club._id !== clubId).map((club) => <label key={club._id}><input type="checkbox" checked={coHostIds.includes(club._id)} onChange={(event) => setCoHostIds((current) => event.target.checked ? [...new Set([...current, club._id])] : current.filter((identity) => identity !== club._id))} />{club.name}</label>)}</div>}
+              {eventOrganizers.length > 0 && isStudentAffairs && <div className="event-cohost-group"><strong>Event organizers</strong>{eventOrganizers.filter((organizer) => organizer._id !== clubId).map((organizer) => <label key={organizer._id}><input type="checkbox" checked={coHostIds.includes(organizer._id)} onChange={(event) => setCoHostIds((current) => event.target.checked ? [...new Set([...current, organizer._id])] : current.filter((identity) => identity !== organizer._id))} />{organizer.name}</label>)}</div>}
+              <small id="event-cohost-help">Select every club or organizer group partnering on this event.</small>
+            </fieldset>}
+            <label className="field-label">Event name<input name="title" required maxLength={150} placeholder="Give your event a name" defaultValue={selectedEvent?.title || ''} /></label>
+            <label className="field-label">What is it about?<textarea name="description" maxLength={3000} rows="3" placeholder="A few details for people who might come along…" defaultValue={selectedEvent?.description || ''} /></label>
             <label className="field-label">Event poster (optional)<input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => pickImage(event, 'poster')} /></label>
             {posterPreview && <div className="media-preview media-preview-poster"><img src={posterPreview} alt="Event poster preview" /><button type="button" className="text-link" onClick={() => setPosterPreview('')}>Remove poster</button></div>}
-            <label className="field-label">Venue<select name="venueId" required defaultValue="" disabled={checkingAvailability}><option value="" disabled>{checkingAvailability ? 'Checking venue availability…' : 'Choose an available venue'}</option>{venues.map((venue) => {
+            <label className="field-label">Venue<select name="venueId" required defaultValue={selectedEvent?.venueId?._id || selectedEvent?.venueId || ''} disabled={checkingAvailability}><option value="" disabled>{checkingAvailability ? 'Checking venue availability…' : 'Choose an available venue'}</option>{venues.map((venue) => {
               const availability = venueAvailability.find((item) => item._id === venue._id);
-              return <option key={venue._id} value={venue._id} disabled={availability && !availability.available}>{venue.name} · {venue.location}{availability && !availability.available ? ' · Occupied' : ''}</option>;
+              const currentVenue = String(selectedEvent?.venueId?._id || selectedEvent?.venueId || '') === venue._id;
+              return <option key={venue._id} value={venue._id} disabled={availability && !availability.available && !currentVenue}>{venue.name} · {venue.location}{availability && !availability.available && !currentVenue ? ' · Occupied' : ''}</option>;
             })}</select></label>
             {availabilityError && <div className="notice notice-error" role="alert">Could not check venue availability: {availabilityError} The server will check again when you submit.</div>}
             {eventStart && eventEnd && new Date(eventEnd) <= new Date(eventStart) && <div className="notice notice-error" role="alert">The end time must be after the start time.</div>}
             <div className="form-row">
               <label className="field-label">Starts<input name="eventDate" type="datetime-local" required value={eventStart} onChange={(event) => setEventStart(event.target.value)} /></label>
               <label className="field-label">Ends<input name="endDate" type="datetime-local" required min={eventStart || undefined} value={eventEnd} onChange={(event) => setEventEnd(event.target.value)} /></label>
-              <label className="field-label">Capacity<input name="capacity" type="number" min="1" max="5000" defaultValue="100" required /></label>
+              <label className="field-label">Capacity<input name="capacity" type="number" min="1" max="5000" defaultValue={selectedEvent?.capacity || 100} required /></label>
             </div>
+            {eventType === 'technical' && <fieldset className="event-cohost-picker technical-event-details">
+              <legend>Technical event proposal details (optional)</legend>
+              <div className="form-row">
+                <label className="field-label">Event category<select name="technical-eventCategory" defaultValue={selectedEvent?.technicalDetails?.eventCategory || ''}><option value="">Choose category</option><option value="flagship_intercollege">Flagship — Intercollege</option><option value="flagship_interuniversity">Flagship — Inter University</option><option value="independent">Independent</option><option value="collaboration">Collaboration — Amritadhara Club/Forum</option><option value="coordinated">Coordinated — institution-level event</option></select></label>
+                <label className="field-label">Program driven by<select name="technical-programDrivenBy" defaultValue={selectedEvent?.technicalDetails?.programDrivenBy || ''}><option value="">Choose activity</option><option value="iic_calendar_activity">IIC Calendar Activity</option><option value="celebration_activity">Celebration Activity</option><option value="self_driven_activity">Self-Driven Activity</option></select></label>
+                <label className="field-label">Quarter<select name="technical-quarter" defaultValue={selectedEvent?.technicalDetails?.quarter || ''}><option value="">Choose quarter</option><option value="Q1">Q1 · Sep–Nov</option><option value="Q2">Q2 · Dec–Feb</option><option value="Q3">Q3 · Mar–May</option><option value="Q4">Q4 · Jun–Aug</option></select></label>
+                <label className="field-label">Program type / level<select name="technical-programLevel" defaultValue={selectedEvent?.technicalDetails?.programLevel || ''}><option value="">Choose level</option><option value="level_1">Level 1</option><option value="level_2">Level 2</option><option value="level_3">Level 3</option><option value="level_4">Level 4</option></select></label>
+              </div>
+              <label className="field-label">Program theme<select name="technical-programTheme" defaultValue={selectedEvent?.technicalDetails?.programTheme || ''}><option value="">Choose theme</option><option value="innovation_design_thinking">Innovation &amp; Design Thinking</option><option value="ipr_technology_transfer">IPR &amp; Technology Transfer</option><option value="pre_incubation_incubation_management">Pre-incubation &amp; Incubation Management</option><option value="entrepreneurship_startup">Entrepreneurship &amp; Startup</option></select></label>
+              <div className="form-row">
+                <label className="field-label">Presiding official<input name="technical-presidingOfficial" maxLength="200" defaultValue={selectedEvent?.technicalDetails?.presidingOfficial || ''} /></label>
+                <label className="field-label">Resource person type<select name="technical-resourcePersonType" defaultValue={selectedEvent?.technicalDetails?.resourcePersonType || ''}><option value="">Choose type</option><option value="external">External</option><option value="alumni">Alumni</option><option value="internal">Internal</option></select></label>
+              </div>
+              <label className="field-label">Resource person details<textarea name="technical-resourcePersonDetails" maxLength="1000" rows="2" defaultValue={selectedEvent?.technicalDetails?.resourcePersonDetails || ''} placeholder="Name, title, organization and contact details" /></label>
+              <label className="field-label">Program activities / level details<textarea name="technical-programDescription" maxLength="2000" rows="3" defaultValue={selectedEvent?.technicalDetails?.programDescription || ''} placeholder="Describe proposed activities, hours and the selected program level" /></label>
+              <div className="form-row">
+                <label className="field-label">Expected internal participants<input name="technical-internalParticipants" type="number" min="0" step="1" defaultValue={selectedEvent?.technicalDetails?.internalParticipants ?? ''} /></label>
+                <label className="field-label">Expected external participants<input name="technical-externalParticipants" type="number" min="0" step="1" defaultValue={selectedEvent?.technicalDetails?.externalParticipants ?? ''} /></label>
+                <label className="field-label">Mode<select name="technical-sessionMode" defaultValue={selectedEvent?.technicalDetails?.sessionMode || ''}><option value="">Choose mode</option><option value="online">Online</option><option value="offline">Offline</option><option value="hybrid">Hybrid</option></select></label>
+                <label className="field-label">Duration (hours)<input name="technical-durationHours" type="number" min="0" step="0.5" defaultValue={selectedEvent?.technicalDetails?.durationHours ?? ''} /></label>
+              </div>
+              <div className="form-row">
+                <label className="field-label">Estimated budget (INR)<input name="technical-estimatedBudget" type="number" min="0" step="1" defaultValue={selectedEvent?.technicalDetails?.estimatedBudget ?? ''} /></label>
+                <label className="field-label">Budget in words<input name="technical-budgetInWords" maxLength="300" defaultValue={selectedEvent?.technicalDetails?.budgetInWords || ''} /></label>
+              </div>
+              <label className="field-label">SDG alignment<select name="technical-sdgGoals" multiple size="4" defaultValue={selectedEvent?.technicalDetails?.sdgGoals?.map(String) || []}><option value="1">SDG 1 — No poverty</option><option value="2">SDG 2 — Zero hunger</option><option value="3">SDG 3 — Good health and well-being</option><option value="4">SDG 4 — Quality education</option><option value="5">SDG 5 — Gender equality</option><option value="6">SDG 6 — Clean water and sanitation</option><option value="7">SDG 7 — Affordable and clean energy</option><option value="8">SDG 8 — Decent work and economic growth</option><option value="9">SDG 9 — Industry, innovation and infrastructure</option><option value="10">SDG 10 — Reduced inequalities</option><option value="11">SDG 11 — Sustainable cities and communities</option><option value="12">SDG 12 — Responsible consumption and production</option><option value="13">SDG 13 — Climate action</option><option value="14">SDG 14 — Life below water</option><option value="15">SDG 15 — Life on land</option><option value="16">SDG 16 — Peace, justice and strong institutions</option><option value="17">SDG 17 — Partnerships for the goals</option></select></label>
+              <fieldset className="event-cohost-picker">
+                <legend>Program outcomes (optional)</legend>
+                <div className="event-cohost-group"><strong>PO</strong>{Array.from({ length: 11 }, (_, index) => `PO${index + 1}`).map((outcome) => <label key={outcome}><input type="checkbox" name="technical-programOutcomes" value={outcome} defaultChecked={selectedEvent?.technicalDetails?.programOutcomes?.includes(outcome)} />{outcome}</label>)}</div>
+                <div className="event-cohost-group"><strong>PSO</strong>{Array.from({ length: 4 }, (_, index) => `PSO${index + 1}`).map((outcome) => <label key={outcome}><input type="checkbox" name="technical-programSpecificOutcomes" value={outcome} defaultChecked={selectedEvent?.technicalDetails?.programSpecificOutcomes?.includes(outcome)} />{outcome}</label>)}</div>
+              </fieldset>
+              <label className="field-label">Impact analysis mapped to POs/PSOs<textarea name="technical-impactAnalysis" maxLength="3000" rows="3" defaultValue={selectedEvent?.technicalDetails?.impactAnalysis || ''} /></label>
+              <label className="field-label">Annexures / supporting material<textarea name="technical-annexures" maxLength="2000" rows="2" defaultValue={selectedEvent?.technicalDetails?.annexures || ''} placeholder="Add links or describe attached material" /></label>
+              <label className="field-label">Photo link<input name="technical-photoLink" type="url" maxLength="1000" defaultValue={selectedEvent?.technicalDetails?.photoLink || ''} /></label>
+            </fieldset>}
+          </>}
+          {type === 'borrow' && <>
+            <label className="field-label">Equipment<select value={borrowEquipmentId} onChange={(event) => { setBorrowEquipmentId(event.target.value); setRequestEventId(''); }} required><option value="" disabled>Select equipment</option>{equipmentItems.map((item) => <option key={item._id} value={item._id}>{item.name} · {item.clubId?.name || 'Club'} ({item.availableQuantity} available)</option>)}</select></label>
+            <label className="field-label">Related event<select value={requestEventId} onChange={(event) => setRequestEventId(event.target.value)} required><option value="" disabled>Select this club’s event</option>{requestEvents.map((item) => <option key={item._id} value={item._id}>{item.title} · {formatDate(item.eventDate)}</option>)}</select></label>
+            <label className="field-label">Requested return date<input name="dueDate" type="date" min={new Date().toISOString().slice(0, 10)} defaultValue={defaultDueDate} required /></label>
+            <label className="field-label">Purpose<textarea name="purpose" maxLength="1000" rows="3" placeholder="What will the equipment be used for?" /></label>
+            <p className="muted-copy">Your faculty mentor reviews this request first, followed by Student Affairs.</p>
+          </>}
+          {type === 'eventReport' && <>
+            <label className="field-label">Event<select value={reportEventId} onChange={(event) => setReportEventId(event.target.value)} required><option value="" disabled>Select a completed event</option>{reportEvents.map((item) => <option key={item._id} value={item._id}>{item.title} · {formatDate(item.eventDate)}</option>)}</select></label>
+            <EventReportFields onImageChange={pickReportImage} />
+            <p className="muted-copy">The OD attendance CSV is generated from the event’s attendance records when submitted.</p>
           </>}
           {type === 'announcement' && <>
             <label className="field-label">Headline<input name="title" required maxLength={150} placeholder="What's the news?" /></label>
@@ -367,14 +790,15 @@ function Modal({ type, clubs, profiles, venues, selectedClub, profile, onClose, 
             </div>
           </>}
           {type === 'funding' && <>
+            <label className="field-label">Related event<select value={requestEventId} onChange={(event) => setRequestEventId(event.target.value)} required><option value="" disabled>Select this club’s event</option>{requestEvents.map((item) => <option key={item._id} value={item._id}>{item.title} · {formatDate(item.eventDate)}</option>)}</select></label>
             <label className="field-label">How much do you need?<input name="requestedAmount" type="number" min="1" step="1" required placeholder="Amount in INR" /></label>
             <label className="field-label">What is it for?<textarea name="purpose" required maxLength={2000} rows="4" placeholder="Tell your coordinator how the funds will be used…" /></label>
           </>}
           {formError && <div className="notice notice-error" role="alert">{formError}</div>}
           <div className="modal-actions">
             <button className="button button-quiet" type="button" onClick={onClose}>Cancel</button>
-            <button className="button button-primary" type="submit" disabled={busy || checkingAvailability || (!clubs.length && !isClubForm) || (type === 'event' && eventEnd && new Date(eventEnd) <= new Date(eventStart))}>
-              {busy ? 'Saving…' : type === 'apply' ? 'Send application' : type === 'funding' ? 'Send request' : 'Save'}
+            <button className="button button-primary" type="submit" disabled={busy || checkingAvailability || (!clubs.length && !isClubForm) || (isEventForm && eventEnd && new Date(eventEnd) <= new Date(eventStart))}>
+              {busy ? 'Saving…' : type === 'apply' ? 'Send application' : type === 'funding' ? 'Send request' : type === 'editEvent' ? 'Save event' : 'Save'}
               {!busy && <ArrowRight size={16} />}
             </button>
           </div>
@@ -384,19 +808,61 @@ function Modal({ type, clubs, profiles, venues, selectedClub, profile, onClose, 
   );
 }
 
+function RejectionFeedbackDialog({ kind, onClose, onSubmit }) {
+  const [feedback, setFeedback] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const labels = {
+    application: 'club application',
+    event: 'event proposal',
+    funding: 'funding request',
+    borrow: 'equipment request',
+    eventReport: 'event report',
+  };
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    try {
+      await onSubmit(feedback.trim());
+    } catch (submitError) {
+      setError(submitError.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
+    <section className="modal-card" role="dialog" aria-modal="true" aria-labelledby="rejection-title">
+      <div className="modal-heading">
+        <div><span className="eyebrow">REVIEW FEEDBACK</span><h2 id="rejection-title">Reject {labels[kind] || 'request'}</h2></div>
+        <button className="icon-button" type="button" onClick={onClose} disabled={busy} aria-label="Close dialog"><X size={19} /></button>
+      </div>
+      <form className="modal-form" onSubmit={submit}>
+        <p className="modal-intro">Give the submitter a clear reason for this decision. They’ll be able to read this feedback.</p>
+        <label className="field-label">Reason for rejection<textarea value={feedback} onChange={(event) => setFeedback(event.target.value)} required maxLength={2000} minLength={3} rows="4" autoFocus /></label>
+        {error && <div className="notice notice-error" role="alert">{error}</div>}
+        <div className="modal-actions">
+          <button className="button button-quiet" type="button" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className="button button-primary" type="submit" disabled={busy || feedback.trim().length < 3}>{busy ? 'Submitting…' : 'Submit rejection'} <ArrowRight size={16} /></button>
+        </div>
+      </form>
+    </section>
+  </div>;
+}
+
 function OverviewEventCarousel({ events, onOpen }) {
   const [activeIndex, setActiveIndex] = useState(0);
   const [pendingIndex, setPendingIndex] = useState(null);
   const [direction, setDirection] = useState(1);
   const [paused, setPaused] = useState(false);
-  const transitioning = useRef(false);
   const transitionTimer = useRef(null);
   const safeIndex = events.length ? activeIndex % events.length : 0;
   const activeEvent = events[safeIndex];
 
   const finishTransition = useCallback((targetIndex) => {
-    if (!transitioning.current || targetIndex === null) return;
-    transitioning.current = false;
+    if (targetIndex === null) return;
     window.clearTimeout(transitionTimer.current);
     transitionTimer.current = null;
     setActiveIndex(targetIndex);
@@ -404,14 +870,20 @@ function OverviewEventCarousel({ events, onOpen }) {
   }, []);
 
   const moveTo = useCallback((nextIndex) => {
-    if (transitioning.current || events.length < 2) return;
+    if (events.length < 2) return;
     const normalizedIndex = (nextIndex + events.length) % events.length;
-    if (normalizedIndex === safeIndex) return;
-    transitioning.current = true;
-    setDirection(normalizedIndex > safeIndex || (safeIndex === events.length - 1 && normalizedIndex === 0) ? 1 : -1);
+    if (normalizedIndex === safeIndex) {
+      window.clearTimeout(transitionTimer.current);
+      transitionTimer.current = null;
+      setPendingIndex(null);
+      return;
+    }
+    const currentIndex = pendingIndex ?? safeIndex;
+    setDirection(normalizedIndex > currentIndex || (currentIndex === events.length - 1 && normalizedIndex === 0) ? 1 : -1);
     setPendingIndex(normalizedIndex);
+    window.clearTimeout(transitionTimer.current);
     transitionTimer.current = window.setTimeout(() => finishTransition(normalizedIndex), 650);
-  }, [events.length, finishTransition, safeIndex]);
+  }, [events.length, finishTransition, pendingIndex, safeIndex]);
 
   useEffect(() => {
     if (events.length < 2 || paused || pendingIndex !== null) return undefined;
@@ -422,10 +894,8 @@ function OverviewEventCarousel({ events, onOpen }) {
   useEffect(() => () => window.clearTimeout(transitionTimer.current), []);
 
   if (!activeEvent) return null;
-  const nextIndex = (safeIndex + 1) % events.length;
-  const previousIndex = (safeIndex - 1 + events.length) % events.length;
   const firstIndex = direction < 0 && pendingIndex !== null ? pendingIndex : safeIndex;
-  const secondIndex = direction < 0 ? safeIndex : (pendingIndex ?? nextIndex);
+  const secondIndex = direction < 0 ? safeIndex : (pendingIndex ?? ((safeIndex + 1) % events.length));
   const renderSlide = (event, index) => {
     const start = event.eventDate ? new Date(event.eventDate) : null;
     const end = event.endDate ? new Date(event.endDate) : null;
@@ -441,7 +911,7 @@ function OverviewEventCarousel({ events, onOpen }) {
         <span className="overview-event-poster-date">{formatDate(event.eventDate, { month: 'short', day: 'numeric' })}</span>
       </button>
       <div className="overview-event-copy">
-        <div className="overview-event-topline"><span className="banner-kicker"><Sparkles size={14} />UPCOMING CAMPUS EVENT</span><span className="overview-event-count">{index + 1} / {events.length}</span></div>
+        <div className="overview-event-topline"><span className="banner-kicker">UPCOMING CAMPUS EVENT</span><span className="overview-event-count">{index + 1} / {events.length}</span></div>
         <span className="overview-event-club">{event.clubId?.name || 'Campus club'}</span>
         <h2>{event.title}</h2>
         <p className="overview-event-description">{event.description || 'Join your campus community for this upcoming event.'}</p>
@@ -452,19 +922,18 @@ function OverviewEventCarousel({ events, onOpen }) {
         <div className="overview-event-bottom">
           <button className="button button-light" type="button" onClick={() => onOpen(event)}>Event details <ArrowRight size={16} /></button>
           {events.length > 1 && <div className="overview-event-controls" aria-label="Browse upcoming events">
-            <button className="icon-button" type="button" onClick={() => moveTo(previousIndex)} disabled={pendingIndex !== null} aria-label="Previous event"><ChevronLeft size={18} /></button>
+            <button className="icon-button" type="button" onClick={() => moveTo(((pendingIndex ?? safeIndex) - 1 + events.length) % events.length)} aria-label="Previous event"><ChevronLeft size={18} /></button>
             <div className="overview-event-dots" aria-label={`Event ${safeIndex + 1} of ${events.length}`}>
               {events.map((item, itemIndex) => <button
                 key={item._id}
                 className={`overview-event-dot ${itemIndex === safeIndex ? 'overview-event-dot-active' : ''}`}
                 type="button"
                 onClick={() => moveTo(itemIndex)}
-                disabled={pendingIndex !== null}
                 aria-label={`Show event ${itemIndex + 1}: ${item.title}`}
                 aria-current={itemIndex === safeIndex ? 'true' : undefined}
               />)}
             </div>
-            <button className="icon-button" type="button" onClick={() => moveTo(nextIndex)} disabled={pendingIndex !== null} aria-label="Next event"><ChevronRight size={18} /></button>
+            <button className="icon-button" type="button" onClick={() => moveTo(((pendingIndex ?? safeIndex) + 1) % events.length)} aria-label="Next event"><ChevronRight size={18} /></button>
           </div>}
         </div>
       </div>
@@ -502,40 +971,83 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
   const [problem, setProblem] = useState('');
   const [toast, setToast] = useState('');
   const [modal, setModal] = useState('');
+  const [rejectionRequest, setRejectionRequest] = useState(null);
+  const [notificationsOpen, setNotificationsOpen] = useState(false);
+  const [notificationError, setNotificationError] = useState('');
+  const [seenAnnouncementIds, setSeenAnnouncementIds] = useState(() => loadSeenAnnouncementIds(profile._id));
+  const [chatReadAt, setChatReadAt] = useState(() => loadChatReadAt(profile._id));
+  const [unreadChatCounts, setUnreadChatCounts] = useState({});
   const [busy, setBusy] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [search, setSearch] = useState('');
   const [selectedClub, setSelectedClub] = useState(null);
+  const [selectedEquipment, setSelectedEquipment] = useState(null);
+  const [editingEvent, setEditingEvent] = useState(null);
   const [selectedEvent, setSelectedEvent] = useState(null);
   const [memberClubId, setMemberClubId] = useState('');
+  const [includeEndedMembers, setIncludeEndedMembers] = useState(false);
   const [members, setMembers] = useState([]);
   const [membersError, setMembersError] = useState('');
   const [memberActionError, setMemberActionError] = useState('');
+  const [workflowFilter, setWorkflowFilter] = useState('all');
   const [chatClubId, setChatClubId] = useState('');
   const [chatGroup, setChatGroup] = useState('members');
   const [chatMessages, setChatMessages] = useState([]);
   const [chatError, setChatError] = useState('');
   const role = profile.role;
-  const track = dashboardTrack(role, data.memberships);
+  const memberListUrl = `/members?clubId=${encodeURIComponent(memberClubId)}${includeEndedMembers ? '&includeEnded=true' : ''}`;
+  const hasDemoData = Object.values(data).some((value) =>
+    Array.isArray(value) && value.some((item) => item?.isDemoData));
+  const isStudentAffairs = role === 'college_admin' && profile.adminType === 'student_affairs';
+  const hasVerifiedClubAccess = Boolean(profile.isClubAccount && profile.verifiedClubId)
+    || Boolean(profile.verifiedClubId && data.memberships.some((membership) =>
+    String(membership.clubId?._id || membership.clubId) === String(profile.verifiedClubId)
+    && isOfficeBearerPosition(membership)));
+  const track = dashboardTrack(role, data.memberships, hasVerifiedClubAccess);
+  const verifiedClub = hasVerifiedClubAccess
+    ? data.managedClubs.find((club) => String(club._id) === String(profile.verifiedClubId))
+      || data.clubs.find((club) => String(club._id) === String(profile.verifiedClubId))
+    : null;
+  const verifiedClubName = verifiedClub?.name || 'Verified club';
   const copyTrack = track === 'president' ? 'office-bearer' : track;
-  const navigation = useMemo(() => navigationFor(track), [track]);
-  const isLeadership = (membership) => membership.membershipStatus !== 'pending'
-    && (['executive', 'office_bearer', 'president', 'vice_president', 'treasurer', 'secretary'].includes(membership.position)
-      || membership.officeBearerGroup);
+  const navigation = useMemo(
+    () => navigationFor(track).filter((item) => item.id !== 'credentialRequests' || isStudentAffairs),
+    [isStudentAffairs, track],
+  );
+  const isLeadership = (membership) => membership.membershipStatus === 'active'
+    && membership.position === 'executive'
+    && !membership.officeBearerGroup;
   const isOfficeBearer = isOfficeBearerPosition;
-  const canManage = role === 'college_admin' || data.memberships.some(isLeadership);
+  const canManage = role === 'college_admin'
+    || (role === 'faculty_coordinator' && data.managedClubs.some((club) => isClubMentor(club, profile._id)))
+    || data.memberships.some(isLeadership);
   const canReview = role === 'college_admin'
-    || data.memberships.some(isOfficeBearer)
-    || (role === 'faculty_coordinator' && data.managedClubs.some((club) =>
-      String(club.mentor?._id || club.mentor || '') === String(profile._id)));
-  const memberClubList = role === 'college_admin'
-    ? data.managedClubs
-    : data.managedClubs.filter((club) => data.memberships.some((membership) =>
-      (membership.clubId?._id || membership.clubId) === club._id && isOfficeBearer(membership))
-      || String(club.mentor?._id || club.mentor || '') === String(profile._id));
-  const eventClubList = data.managedClubs.filter((club) => data.memberships.some((membership) =>
-    (membership.clubId?._id || membership.clubId) === club._id
-    && ['president', 'executive'].includes(membership.position)));
+    || (role === 'faculty_coordinator' && data.managedClubs.some((club) => isClubMentor(club, profile._id)));
+  const canPublishAnnouncement = role === 'college_admin'
+    || (role === 'faculty_coordinator' && data.managedClubs.some((club) => isClubMentor(club, profile._id)));
+  const memberClubList = hasVerifiedClubAccess
+    ? data.managedClubs.filter((club) => club._id === String(profile.verifiedClubId))
+    : role === 'college_admin'
+      ? data.managedClubs
+      : data.managedClubs.filter((club) => isClubMentor(club, profile._id));
+  const eventClubList = data.managedClubs.filter((club) =>
+    (!hasVerifiedClubAccess || club._id === String(profile.verifiedClubId))
+    && (Boolean(profile.isClubAccount && club._id === String(profile.verifiedClubId))
+      || data.memberships.some((membership) =>
+        (membership.clubId?._id || membership.clubId) === club._id
+        && (isLeadership(membership) || (hasVerifiedClubAccess && isOfficeBearerPosition(membership))))));
+  const chatRooms = useMemo(() => data.memberships
+    .filter((membership) => membership.membershipStatus === 'active')
+    .flatMap((membership) => {
+      const clubId = membership.clubId?._id || membership.clubId;
+      const club = data.managedClubs.find((item) => item._id === clubId);
+      if (!club) return [];
+      const rooms = [{ clubId, clubName: club.name, group: 'members' }];
+      if (isOfficeBearerPosition(membership)) rooms.push({ clubId, clubName: club.name, group: 'office_bearers' });
+      return rooms;
+    })
+    .filter((room, index, rooms) => rooms.findIndex((item) => item.clubId === room.clubId && item.group === room.group) === index),
+  [data.managedClubs, data.memberships]);
   useEffect(() => {
     if (!navigation.some((item) => item.id === page)) setPage('overview');
   }, [navigation, page]);
@@ -544,26 +1056,132 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
     setLoading(true);
     setProblem('');
     try {
-      const [clubs, managedClubs, memberships, venues, events, announcements, applications, registrations, participation, equipment, funding, transactions, borrows, summary, profiles, eventReports] = await Promise.all([
-        api('/clubs'), api('/my/clubs'), api('/members/mine'), api('/venues'), api('/events/manage'),
+      const memberships = await api('/members/mine');
+      const verifiedClubAccess = Boolean(profile.isClubAccount && profile.verifiedClubId)
+        || Boolean(profile.verifiedClubId && memberships.some((membership) =>
+        String(membership.clubId?._id || membership.clubId) === String(profile.verifiedClubId)
+        && isOfficeBearerPosition(membership)));
+      const hasOfficeBearerAccess = memberships.some(isOfficeBearerPosition) && !verifiedClubAccess;
+      const [clubs, managedClubs, venues, events, announcements, applications, registrations, participation, equipment, funding, borrows, summary, profiles, eventReports, eventOrganizers, notifications, credentialRequests] = await Promise.all([
+        api('/clubs'), api('/my/clubs'), api('/venues'), api('/events/manage'),
         api('/announcements'), api('/applications'), api('/registrations'), api('/participation'), api('/equipment'),
-        api('/funding-requests'),
-        ['faculty_coordinator', 'college_admin'].includes(profile.role) ? api('/transactions') : Promise.resolve([]),
-        api('/equipment-borrows'), api('/reports/summary'),
+        hasOfficeBearerAccess ? Promise.resolve([]) : api('/funding-requests'),
+        api('/equipment-borrows'),
+        hasOfficeBearerAccess ? Promise.resolve(initialData.summary) : api('/reports/summary'),
         profile.role === 'college_admin'
           ? api('/profiles')
           : profile.role === 'faculty_coordinator' ? api('/profiles/students') : Promise.resolve([]),
         api('/event-reports'),
+        profile.role === 'college_admin' && profile.adminType === 'student_affairs'
+          ? api('/event-organizers')
+          : Promise.resolve([]),
+        api('/notifications'),
+        profile.role === 'college_admin' && profile.adminType === 'student_affairs'
+          ? api('/club-credential-change-requests')
+          : Promise.resolve([]),
       ]);
-      setData({ clubs, managedClubs, memberships, venues, events, announcements, applications, registrations, participation, equipment, funding, transactions, borrows, summary, profiles, eventReports });
+      const canViewTransactions = ['faculty_coordinator', 'college_admin'].includes(profile.role);
+      const transactions = canViewTransactions ? await api('/transactions') : [];
+      setData({ ...initialData, clubs, managedClubs, memberships, venues, events, announcements, applications, registrations, participation, equipment, funding, transactions, borrows, summary, profiles, eventReports, eventOrganizers, notifications, credentialRequests });
     } catch (error) {
       setProblem(error.message);
     } finally {
       setLoading(false);
     }
-  }, [profile.role]);
+  }, [profile.adminType, profile.isClubAccount, profile.role, profile.verifiedClubId]);
+
+  const canViewTransactions = ['faculty_coordinator', 'college_admin'].includes(role)
+  const hasOfficeBearerAccess = data.memberships.some(isOfficeBearer) && !hasVerifiedClubAccess;
+  const canViewClubFunding = !hasOfficeBearerAccess;
+  const refreshNotificationData = useCallback(async () => {
+    try {
+      const [applications, memberships, events, funding, eventReports, announcements, transactions, notifications] = await Promise.all([
+        api('/applications'),
+        api('/members/mine'),
+        api('/events/manage'),
+        canViewClubFunding ? api('/funding-requests') : Promise.resolve([]),
+        api('/event-reports'),
+        api('/announcements'),
+        canViewTransactions ? api('/transactions') : Promise.resolve([]),
+        api('/notifications'),
+      ]);
+      setData((current) => ({ ...current, applications, memberships, events, funding, eventReports, announcements, transactions, notifications }));
+      setNotificationError('');
+    } catch (error) {
+      setNotificationError(error.message);
+    }
+  }, [canViewClubFunding, canViewTransactions]);
+
+  const refreshChatNotifications = useCallback(async () => {
+    if (!navigation.some((item) => item.id === 'chats') || !chatRooms.length) {
+      setUnreadChatCounts({});
+      return;
+    }
+    try {
+      const responses = await Promise.all(chatRooms.map(async (room) => ({
+        room,
+        messages: await api(`/clubs/${room.clubId}/messages?group=${encodeURIComponent(room.group)}`),
+      })));
+      const nextReadAt = { ...chatReadAt };
+      const nextUnreadCounts = {};
+      let activeMessages = null;
+      responses.forEach(({ room, messages }) => {
+        const orderedMessages = [...messages].reverse();
+        const roomKey = `${room.clubId}:${room.group}`;
+        const latestMessageAt = orderedMessages.reduce((latest, message) => {
+          const createdAt = new Date(message.createdAt).getTime();
+          return Number.isNaN(createdAt) ? latest : Math.max(latest, createdAt);
+        }, 0);
+        const cursor = Date.parse(nextReadAt[roomKey] || '');
+        if (!Number.isFinite(cursor)) {
+          nextReadAt[roomKey] = latestMessageAt ? new Date(latestMessageAt).toISOString() : new Date().toISOString();
+        } else {
+          const unread = orderedMessages.filter((message) => {
+            const createdAt = new Date(message.createdAt).getTime();
+            const senderId = message.senderId?._id || message.senderId;
+            return !Number.isNaN(createdAt) && createdAt > cursor && String(senderId) !== String(profile._id);
+          }).length;
+          if (unread) nextUnreadCounts[roomKey] = unread;
+        }
+        if (page === 'chats' && chatClubId === room.clubId && chatGroup === room.group) {
+          activeMessages = orderedMessages;
+          if (latestMessageAt) nextReadAt[roomKey] = new Date(latestMessageAt).toISOString();
+          delete nextUnreadCounts[roomKey];
+        }
+      });
+      setUnreadChatCounts(nextUnreadCounts);
+      if (activeMessages) {
+        setChatMessages(activeMessages);
+        setChatError('');
+      }
+      if (JSON.stringify(nextReadAt) !== JSON.stringify(chatReadAt)) {
+        setChatReadAt(nextReadAt);
+        const storageError = saveChatReadAt(profile._id, nextReadAt);
+        if (storageError) setNotificationError(`Chat read status could not be saved: ${storageError}`);
+      }
+    } catch (error) {
+      setNotificationError(error.message);
+    }
+  }, [chatClubId, chatGroup, chatReadAt, chatRooms, navigation, page, profile._id]);
 
   useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => {
+    refreshChatNotifications();
+  }, [refreshChatNotifications]);
+  useEffect(() => {
+    const poll = () => {
+      if (document.visibilityState === 'visible') {
+        refreshNotificationData();
+        refreshChatNotifications();
+      }
+    };
+    const interval = window.setInterval(poll, 30_000);
+    document.addEventListener('visibilitychange', poll);
+    return () => {
+      window.clearInterval(interval);
+      document.removeEventListener('visibilitychange', poll);
+    };
+  }, [refreshChatNotifications, refreshNotificationData]);
   useEffect(() => {
     if (!toast) return undefined;
     const timer = window.setTimeout(() => setToast(''), 3600);
@@ -585,11 +1203,11 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
     if (page !== 'members' || !memberClubId) return undefined;
     let active = true;
     setMembersError('');
-    api(`/members?clubId=${encodeURIComponent(memberClubId)}`)
+    api(memberListUrl)
       .then((result) => { if (active) setMembers(result); })
       .catch((error) => { if (active) setMembersError(error.message); });
     return () => { active = false; };
-  }, [memberClubId, page, data.managedClubs]);
+  }, [memberClubId, memberListUrl, page, data.managedClubs]);
 
   useEffect(() => {
     if (page !== 'chats' || !chatClubId) return undefined;
@@ -609,6 +1227,69 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
   }, [chatClubId, data.managedClubs]);
 
   const currentPage = navigation.find((item) => item.id === page) || navigation[0];
+  const unreadAnnouncements = data.announcements.filter((announcement) =>
+    !seenAnnouncementIds.includes(announcement._id));
+  const reviewableApplications = data.applications.filter((application) => {
+    if (application.status !== 'pending' || String(application.profileId?._id || application.profileId) === String(profile._id)) return false;
+    const clubId = application.clubId?._id || application.clubId;
+    const club = data.managedClubs.find((item) => item._id === clubId);
+    const isMentor = role === 'faculty_coordinator' && isClubMentor(club, profile._id);
+    const isBearer = data.memberships.some((membership) =>
+      (membership.clubId?._id || membership.clubId) === clubId && isOfficeBearer(membership));
+    return role === 'college_admin' || isMentor || isBearer;
+  });
+  const pendingInvitations = data.memberships.filter((membership) => membership.membershipStatus === 'pending');
+  const eventApprovals = data.events.filter((event) => {
+    return (event.status === 'mentor_pending' && role === 'faculty_coordinator' && hasPendingMentorApproval(event, profile._id))
+      || (event.status === 'student_affairs_pending' && isStudentAffairs);
+  });
+  const fundingApprovals = data.funding.filter((item) => {
+    return (['pending', 'mentor_pending'].includes(item.status) && role === 'faculty_coordinator' && hasPendingMentorApproval(item, profile._id))
+      || (item.status === 'student_affairs_pending' && isStudentAffairs);
+  });
+  const reportApprovals = data.eventReports.filter((report) => {
+    return (report.status === 'mentor_pending' && role === 'faculty_coordinator' && hasPendingMentorApproval(report, profile._id))
+      || (report.status === 'student_affairs_pending' && isStudentAffairs);
+  });
+  const unreadChatMessageCount = Object.values(unreadChatCounts).reduce((total, count) => total + count, 0);
+  const notificationCounts = {
+    applications: reviewableApplications.length + pendingInvitations.length,
+    events: eventApprovals.length,
+    funding: fundingApprovals.length,
+    eventReports: reportApprovals.length,
+    announcements: unreadAnnouncements.length,
+    chats: unreadChatMessageCount,
+  };
+  const notificationItems = [
+    { id: 'applications', label: 'Membership applications & invitations', count: notificationCounts.applications },
+    { id: 'events', label: 'Event proposals awaiting review', count: notificationCounts.events },
+    { id: 'funding', label: 'Funding requests awaiting review', count: notificationCounts.funding },
+    { id: 'eventReports', label: 'Event reports awaiting review', count: notificationCounts.eventReports },
+    { id: 'chats', label: 'New club chat messages', count: notificationCounts.chats },
+    { id: 'announcements', label: 'New announcements', count: notificationCounts.announcements },
+  ].filter((item) => item.count > 0 && navigation.some((navItem) => navItem.id === item.id));
+  const unreadClubLoginNotifications = data.notifications.filter((item) => item.type === 'club_ob_login' && !item.readAt);
+  const totalNotifications = notificationItems.reduce((total, item) => total + item.count, 0)
+    + unreadClubLoginNotifications.length;
+  const markClubLoginRead = async (notification) => {
+    try {
+      await api(`/notifications/${notification._id}/read`, { method: 'PATCH' });
+      setData((current) => ({
+        ...current,
+        notifications: current.notifications.map((item) =>
+          item._id === notification._id ? { ...item, readAt: new Date().toISOString() } : item),
+      }));
+      setNotificationError('');
+    } catch (error) {
+      setNotificationError(error.message);
+    }
+  };
+  const markAnnouncementsSeen = () => {
+    const ids = [...new Set([...seenAnnouncementIds, ...data.announcements.map((item) => item._id)])];
+    setSeenAnnouncementIds(ids);
+    const storageError = saveSeenAnnouncementIds(profile._id, ids);
+    if (storageError) setNotificationError(`Announcement read status could not be saved: ${storageError}`);
+  };
   const filteredClubs = useMemo(() => data.clubs.filter((club) =>
     `${club.name} ${club.category} ${club.description}`.toLowerCase().includes(search.toLowerCase())), [data.clubs, search]);
   const featuredEvents = useMemo(() => data.events
@@ -616,7 +1297,7 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
     .sort((first, second) => new Date(first.eventDate) - new Date(second.eventDate))
     .slice(0, 8), [data.events]);
 
-  const createRecord = async (type, values) => {
+  const createRecord = async (type, values, eventToEdit = null) => {
     setBusy(true);
     try {
       if (type === 'editClub') {
@@ -630,17 +1311,24 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
         event: '/events',
         announcement: '/announcements',
         equipment: '/equipment',
+        borrow: '/equipment-borrows',
         funding: '/funding-requests',
         budget: '/budgets',
         transaction: '/transactions',
         club: '/clubs',
       };
-      const request = type === 'editClub'
+      const request = type === 'eventReport'
+        ? api(`/events/${eventToEdit}/report`, { method: 'POST', body: values })
+        : type === 'editClub'
         ? api(`/clubs/${selectedClub._id}`, { method: 'PATCH', body: values })
+        : type === 'editEvent'
+          ? api(`/events/${eventToEdit._id}`, { method: 'PATCH', body: values })
         : api(routes[type], { method: 'POST', body: values });
       await request;
       setModal('');
-      setToast(type === 'apply' ? 'Your application is on its way.' : 'Saved. The right people are in the loop.');
+      setEditingEvent(null);
+      setSelectedEquipment(null);
+      setToast(type === 'apply' ? 'Your application is on its way.' : type === 'editEvent' ? 'Event details updated.' : 'Saved. The right people are in the loop.');
       await refresh();
       return '';
     } catch (error) {
@@ -661,10 +1349,10 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
   };
 
   const review = (kind, item, status) => {
-    const rejectionFeedback = status === 'rejected'
-      ? window.prompt('Please provide a reason for rejecting this request:')
-      : '';
-    if (status === 'rejected' && !rejectionFeedback?.trim()) return;
+    if (status === 'rejected') {
+      setRejectionRequest({ kind, item });
+      return;
+    }
     const routes = {
       application: `/applications/${item._id}`,
       event: `/events/${item._id}/approval`,
@@ -672,17 +1360,44 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
       borrow: `/equipment-borrows/${item._id}/approval`,
       eventReport: `/event-reports/${item._id}/approval`,
     };
+
     perform(() => api(routes[kind], {
       method: 'PATCH',
-      body: { status, ...(rejectionFeedback ? { rejectionFeedback: rejectionFeedback.trim() } : {}) },
-    }), `Request ${status}.`);
+      body: { status },
+    }), 'Request approved.');
+  };
+
+  const reviewClubCredentialChange = (change, status) => {
+    const rejectionFeedback = status === 'rejected'
+      ? window.prompt('Why is this club login change being rejected?')
+      : '';
+    if (status === 'rejected' && !rejectionFeedback?.trim()) return;
+    perform(() => api(`/club-credential-change-requests/${change._id}/approval`, {
+      method: 'PATCH',
+      body: { status, rejectionFeedback },
+    }), status === 'approved' ? 'Club login change approved for ICTS to apply.' : 'Club login change rejected.');
+  };
+
+  const submitRejection = async (rejectionFeedback) => {
+    const { kind, item } = rejectionRequest;
+    const routes = {
+      application: `/applications/${item._id}`,
+      event: `/events/${item._id}/approval`,
+      funding: `/funding-requests/${item._id}/approval`,
+      borrow: `/equipment-borrows/${item._id}/approval`,
+      eventReport: `/event-reports/${item._id}/approval`,
+    };
+    await api(routes[kind], { method: 'PATCH', body: { status: 'rejected', rejectionFeedback } });
+    setRejectionRequest(null);
+    setToast('Request rejected with feedback.');
+    await refresh();
   };
 
   const updateMemberRole = async (memberId, nextPosition) => {
     try {
       await api(`/members/${memberId}`, { method: 'PATCH', body: nextPosition });
       setToast('Club role updated.');
-      setMembers(await api(`/members?clubId=${encodeURIComponent(memberClubId)}`));
+      setMembers(await api(memberListUrl));
     } catch (error) {
       setToast(error.message);
     }
@@ -694,7 +1409,7 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
     try {
       await api(`/members/${member._id}`, { method: 'DELETE' });
       setToast('Club membership ended. The student account is unchanged.');
-      setMembers(await api(`/members?clubId=${encodeURIComponent(memberClubId)}`));
+      setMembers(await api(memberListUrl));
       await refresh();
     } catch (error) {
       setToast(error.message);
@@ -724,7 +1439,7 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
       setToast('Office-bearer invitation sent. The student must accept before the role becomes active.');
       form.reset();
       await refresh();
-      setMembers(await api(`/members?clubId=${encodeURIComponent(memberClubId)}`));
+      setMembers(await api(memberListUrl));
     } catch (error) {
       setMemberActionError(error.message);
     }
@@ -743,12 +1458,29 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
     const url = URL.createObjectURL(file);
     const link = document.createElement('a');
     link.href = url;
-    link.download = 'my-amrita-club-report.csv';
+    link.download = 'amrita-sangam-club-report.csv';
     link.click();
     URL.revokeObjectURL(url);
   };
 
-  const navigate = (id) => { setPage(id); setMenuOpen(false); setSearch(''); };
+  const navigate = (id) => {
+    if (id === 'announcements') markAnnouncementsSeen();
+    setPage(id);
+    setMenuOpen(false);
+    setSearch('');
+    setNotificationsOpen(false);
+  };
+  const openNotification = (id) => {
+    if (id === 'chats') {
+      const roomKey = Object.keys(unreadChatCounts).find((key) => unreadChatCounts[key] > 0);
+      if (roomKey) {
+        const [clubId, group] = roomKey.split(':');
+        setChatClubId(clubId);
+        setChatGroup(group);
+      }
+    }
+    navigate(id);
+  };
   const sendChatMessage = async (event) => {
     event.preventDefault();
     const form = event.currentTarget;
@@ -757,6 +1489,7 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
       await api(`/clubs/${chatClubId}/messages`, { method: 'POST', body: { group: chatGroup, content } });
       form.reset();
       setChatMessages(await api(`/clubs/${chatClubId}/messages?group=${encodeURIComponent(chatGroup)}`).then((messages) => messages.reverse()));
+      await refreshChatNotifications();
     } catch (error) {
       setChatError(error.message);
     }
@@ -768,15 +1501,33 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
   ]));
   const membershipClubIds = new Set(data.memberships.filter((item) => item.membershipStatus !== 'pending')
     .map((item) => item.clubId?._id || item.clubId));
+  const reportableEvents = data.events.filter((event) => {
+    const clubId = String(event.clubId?._id || event.clubId);
+    const alreadyReported = data.eventReports.some((report) => String(report.eventId?._id || report.eventId) === String(event._id));
+    if (event.status !== 'approved' || new Date(event.eventDate) > new Date() || alreadyReported) return false;
+    if (profile.isClubAccount && String(profile.verifiedClubId) === clubId) return true;
+    return data.memberships.some((membership) => String(membership.clubId?._id || membership.clubId) === clubId
+      && (isLeadership(membership)
+        || (hasVerifiedClubAccess && String(profile.verifiedClubId) === clubId && isOfficeBearerPosition(membership))));
+  });
+  const borrowableEquipment = data.equipment.filter((item) => {
+    const clubId = String(item.clubId?._id || item.clubId);
+    return item.availableQuantity > 0
+      && ((profile.isClubAccount && String(profile.verifiedClubId) === clubId)
+        || data.memberships.some((membership) => String(membership.clubId?._id || membership.clubId) === clubId
+          && (isLeadership(membership)
+            || (hasVerifiedClubAccess && String(profile.verifiedClubId) === clubId && isOfficeBearerPosition(membership)))));
+  });
 
   const pageAction = () => {
     if (page === 'clubs' && role === 'college_admin') return <button className="button button-primary" onClick={() => setModal('club')}><Plus size={16} /> Create club</button>;
-    if (page === 'events' && eventClubList.length) return <button className="button button-primary" onClick={() => setModal('event')}><Plus size={16} /> Propose event</button>;
-    if (page === 'announcements' && canManage) return <button className="button button-primary" onClick={() => setModal('announcement')}><Plus size={16} /> New announcement</button>;
+    if (page === 'events' && (eventClubList.length || isStudentAffairs)) return <button className="button button-primary" onClick={() => setModal('event')}><Plus size={16} /> {isStudentAffairs ? 'Create campus event' : 'Propose event'}</button>;
+    if (page === 'eventReports' && reportableEvents.length) return <button className="button button-primary" onClick={() => setModal('eventReport')}><Plus size={16} /> Create report</button>;
+    if (page === 'announcements' && canPublishAnnouncement) return <button className="button button-primary" onClick={() => setModal('announcement')}><Plus size={16} /> New announcement</button>;
     if (page === 'equipment' && canManage) return <button className="button button-primary" onClick={() => setModal('equipment')}><Plus size={16} /> Add equipment</button>;
     if (page === 'funding' && role === 'college_admin') return <div className="heading-button-group"><button className="button button-outline" onClick={() => setModal('budget')}><Plus size={15} /> Set budget</button><button className="button button-outline" onClick={() => setModal('transaction')}><Plus size={15} /> Record transaction</button><button className="button button-primary" onClick={() => setModal('funding')}><Plus size={15} /> New request</button></div>;
-    if (page === 'funding' && canManage) return <button className="button button-primary" onClick={() => setModal('funding')}><Plus size={16} /> New request</button>;
-    if (page === 'reports' && role !== 'student') return <button className="button button-outline" onClick={downloadClubReport}><Download size={15} /> Export CSV</button>;
+    if (page === 'funding' && (canManage || hasVerifiedClubAccess)) return <button className="button button-primary" onClick={() => setModal('funding')}><Plus size={16} /> New request</button>;
+    if (page === 'reports' && (role !== 'student' || hasVerifiedClubAccess)) return <button className="button button-outline" onClick={downloadClubReport}><Download size={15} /> Export CSV</button>;
     return null;
   };
 
@@ -788,10 +1539,11 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
     <div className={`app-shell shell-${track}`}>
       <aside className={`sidebar ${menuOpen ? 'sidebar-open' : ''}`}>
         <a className="brand" href="#overview" onClick={(event) => { event.preventDefault(); navigate('overview'); }}>
-          <span className="brand-wordmark"><span>my</span> AMRITA</span>
+          <span className="brand-wordmark"><span>Amrita</span> Sangam</span>
         </a>
         <div className="campus-label"><span className="campus-dot" />{{
           'student-affairs': 'CAMPUS ADMINISTRATION',
+          'verified-office-bearer': 'CLUB ACCOUNT',
           mentor: 'FACULTY WORKSPACE',
           president: 'PRESIDENT’S OFFICE',
           'office-bearer': 'CLUB LEADERSHIP',
@@ -802,16 +1554,16 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
           {navigation.map(({ id, label, icon: Icon }) => (
             <button key={id} className={`nav-item ${page === id ? 'nav-active' : ''}`} onClick={() => navigate(id)}>
               <Icon size={18} strokeWidth={1.8} /><span>{label}</span>
-              {id === 'applications' && canReview && openApplications.length > 0 && <b className="nav-count">{openApplications.length}</b>}
+              {notificationCounts[id] > 0 && <b className="nav-count">{notificationCounts[id]}</b>}
             </button>
           ))}
         </nav>
         <div className="sidebar-bottom">
-          <div className="sidebar-help"><div className="help-icon"><CircleHelp size={17} /></div><strong>{track === 'president' ? 'You’re the president' : copyTrack === 'student-affairs' ? 'Campus-wide view' : copyTrack === 'mentor' ? 'Your assigned clubs' : copyTrack === 'office-bearer' ? 'Lead your community' : copyTrack === 'executive' ? 'Build together' : 'Find your people'}</strong><span>{track === 'president' ? 'Your mentor approves events; you recruit and report.' : copyTrack === 'student-affairs' ? 'Create clubs and coordinate mentors.' : copyTrack === 'mentor' ? 'Guide club leaders and event approvals.' : copyTrack === 'office-bearer' ? 'Welcome members and keep your club moving.' : copyTrack === 'executive' ? 'Help bring club events to life.' : 'Campus life can get busy. We’re right here.'}</span></div>
+          <div className="sidebar-help"><div className="help-icon"><CircleHelp size={17} /></div><strong>{hasVerifiedClubAccess ? `${verifiedClubName} account` : track === 'president' ? 'You’re the president' : copyTrack === 'student-affairs' ? 'Campus-wide view' : copyTrack === 'mentor' ? 'Your assigned clubs' : copyTrack === 'office-bearer' ? 'Lead your community' : copyTrack === 'executive' ? 'Build together' : 'Find your people'}</strong><span>{hasVerifiedClubAccess ? 'This workspace is scoped to the club account used at sign-in.' : track === 'president' ? 'Your mentor approves events; you recruit and report.' : copyTrack === 'student-affairs' ? 'Create clubs and coordinate mentors.' : copyTrack === 'mentor' ? 'Guide club leaders and event approvals.' : copyTrack === 'office-bearer' ? 'Welcome members and keep your club moving.' : copyTrack === 'executive' ? 'Help bring club events to life.' : 'Campus life can get busy. We’re right here.'}</span></div>
           <div className="profile-switch">
             <Avatar person={profile} className="user-avatar" />
-            <span className="profile-meta"><strong>{profile.name}</strong><small>{profileTrackLabel(profile, track)}</small><small>{profile.email}</small></span>
-            <button className="profile-edit-button" onClick={() => navigate('profile')}>Profile</button>
+            <span className="profile-meta"><strong>{profile.name}</strong><small>{profileTrackLabel(profile, track, verifiedClubName)}</small><small>{profile.email}</small></span>
+            {!profile.isClubAccount && <button className="profile-edit-button" onClick={() => navigate('profile')}>Profile</button>}
             <button className="sidebar-logout" onClick={onLogout} aria-label="Sign out"><LogOut size={16} /></button>
           </div>
         </div>
@@ -820,13 +1572,33 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
       <main className="main-panel">
         <header className="topbar">
           <button className="mobile-menu icon-button" aria-label="Open navigation" onClick={() => setMenuOpen(!menuOpen)}><Menu size={21} /></button>
-          <div className="breadcrumbs"><span>my AMRITA</span><span className="crumb-slash">/</span><strong>{currentPage.label}</strong></div>
+          <div className="breadcrumbs"><span>Amrita Sangam</span>{hasVerifiedClubAccess && <><span className="crumb-slash">/</span><span>{verifiedClubName}</span></>}<span className="crumb-slash">/</span><strong>{currentPage.label}</strong></div>
           <div className="topbar-right">
-            <span className="role-pill">{profileTrackLabel(profile, track)}</span>
+            <span className="role-pill">{profileTrackLabel(profile, track, verifiedClubName)}</span>
             <ThemeToggle theme={theme} onToggle={onToggleTheme} />
             <button className="button button-outline topbar-logout" onClick={onLogout}><LogOut size={15} /> Log out</button>
-            <button className="icon-button notification-button" aria-label="Your notifications" onClick={() => navigate('announcements')}><Bell size={18} /><i /></button>
-            <button className="topbar-avatar" onClick={() => navigate('profile')} title="My profile"><Avatar person={profile} className="avatar-inner" /><ChevronDown size={13} /></button>
+            <div className="notification-menu">
+              <button className="icon-button notification-button" aria-label={`Notifications${totalNotifications ? `, ${totalNotifications} items need attention` : ''}`} aria-expanded={notificationsOpen} onClick={() => setNotificationsOpen((open) => !open)}>
+                <Bell size={18} />{totalNotifications > 0 && <b className="notification-count">{totalNotifications > 99 ? '99+' : totalNotifications}</b>}
+              </button>
+              {notificationsOpen && <section className="notification-popover" aria-label="Notifications">
+                <div className="notification-popover-heading"><strong>Notifications</strong><button type="button" onClick={refreshNotificationData}>Refresh</button></div>
+                {notificationError && <p className="notification-error" role="alert">{notificationError}</p>}
+                {data.notifications.filter((item) => item.type === 'club_ob_login').map((item) => {
+                  const eventTime = new Date(item.eventAt);
+                  return <button className="notification-item" type="button" key={item._id} onClick={() => markClubLoginRead(item)}>
+                      <span><strong>{item.clubName} · shared account sign-in</strong><small>Login recorded at {Number.isNaN(eventTime.getTime()) ? 'an unknown time' : eventTime.toLocaleString()}. The person using the shared credentials is not identified.</small></span>
+                    {!item.readAt && <b>New</b>}
+                  </button>;
+                })}
+                {notificationItems.length
+                  ? notificationItems.map((item) => <button className="notification-item" type="button" key={item.id} onClick={() => openNotification(item.id)}>
+                    <span><strong>{item.label}</strong><small>Open to see the details and take action</small></span><b>{item.count}</b>
+                  </button>)
+                  : <p className="notification-empty">You’re all caught up. New requests and announcements will appear here.</p>}
+              </section>}
+            </div>
+            <button className="topbar-avatar" onClick={() => navigate(profile.isClubAccount ? 'overview' : 'profile')} title={profile.isClubAccount ? 'Club account' : 'My profile'}><Avatar person={profile} className="avatar-inner" /><ChevronDown size={13} /></button>
           </div>
         </header>
 
@@ -837,48 +1609,60 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
               mentor: 'FACULTY MENTOR DESK',
               president: 'PRESIDENT’S DESK',
               'office-bearer': 'CLUB LEADERSHIP DESK',
+              'verified-office-bearer': `CLUB ACCOUNT · ${verifiedClubName.toUpperCase()}`,
               executive: 'YOUR CLUB WORKSPACE',
               student: 'YOUR CAMPUS, YOUR PACE',
-            }[track]) : 'CAMPUS COMMUNITY'}</span><h1>{page === 'overview' ? (track === 'president' ? `Lead your club, ${greetingName}.` : copyTrack === 'student-affairs' ? 'Campus, connected.' : copyTrack === 'mentor' ? `Welcome back, ${greetingName}.` : copyTrack === 'office-bearer' ? `Lead with care, ${greetingName}.` : copyTrack === 'executive' ? `Make things happen, ${greetingName}.` : `A little more campus, ${greetingName}.`) : currentPage.label}</h1>
-              <p>{page === 'overview' ? ({
-                'student-affairs': 'Create clubs, assign mentors, and keep campus life moving.',
-                mentor: 'Support your assigned clubs and guide their next steps.',
-                president: 'Run your club: recruit executives, plan events, and file reports.',
-                'office-bearer': 'Review applications, support your members, and grow your club.',
-                executive: 'Plan events, stay connected, and make your club ideas real.',
-                student: 'Find your people. Make a plan. See what’s happening around you.',
-              }[track]) : pageDescription(page, role)}</p>
+            }[track]) : hasVerifiedClubAccess ? `CLUB ACCOUNT · ${verifiedClubName.toUpperCase()}` : 'CAMPUS COMMUNITY'}</span><h1>{page === 'overview' ? (hasVerifiedClubAccess ? verifiedClubName : track === 'president' ? `Lead your club, ${greetingName}.` : copyTrack === 'student-affairs' ? 'Campus, connected.' : copyTrack === 'mentor' ? `Welcome back, ${greetingName}.` : copyTrack === 'office-bearer' ? `Lead with care, ${greetingName}.` : copyTrack === 'executive' ? `Make things happen, ${greetingName}.` : `A little more campus, ${greetingName}.`) : currentPage.label}</h1>
+              {page !== 'overview' && page !== 'eventReports' && page !== 'funding' && pageDescription(page, role) && <p>{pageDescription(page, role)}</p>}
             </div>
             <div className="heading-actions">{pageAction()}</div>
           </div>
 
           {problem && <div className="connection-alert"><span className="connection-dot" /><div><strong>Couldn’t load your campus data</strong><p>{problem}</p></div><button onClick={refresh}>Try again</button></div>}
           {loading && <div className="loading-line"><span /> Bringing your campus together…</div>}
+          {hasDemoData && <div className="demo-data-notice" role="status"><strong>Demo data</strong><span>Sample records are labeled and should not be treated as live campus activity.</span></div>}
 
           {!problem && page === 'overview' && (
             <>
+              {hasVerifiedClubAccess && <section className="surface-card list-surface">
+                <SectionHeading
+                  title={`${verifiedClubName} club account`}
+                  subtitle="This shared-account workspace is limited to this club's membership, events, funding, equipment, and reports."
+                />
+              </section>}
               {featuredEvents.length
                 ? <OverviewEventCarousel events={featuredEvents} onOpen={setSelectedEvent} />
-                : <section className="welcome-banner">
-                  <div className="welcome-copy"><span className="banner-kicker"><Sparkles size={14} />{{
+                : !hasVerifiedClubAccess && <section className="welcome-banner">
+                  <div className="welcome-copy"><span className="banner-kicker">{{
                     'student-affairs': 'CAMPUS AT A GLANCE',
                     mentor: 'YOUR MENTORSHIP, IN MOTION',
                     president: 'YOU LEAD THIS CLUB',
                     'office-bearer': 'A GOOD DAY TO LEAD',
+                    'verified-office-bearer': `VERIFIED CLUB ACCOUNT · ${verifiedClubName.toUpperCase()}`,
                     executive: 'MAKE YOUR NEXT IDEA HAPPEN',
                     student: 'A GOOD DAY TO GET INVOLVED',
                   }[track]}</span><h2>{track === 'president' ? <>Your club,<br />your vision.</> : copyTrack === 'student-affairs' ? <>Good clubs make<br />a great campus.</> : copyTrack === 'mentor' ? <>Guide the people<br />who lead.</> : copyTrack === 'office-bearer' ? <>Big ideas start<br />with showing up.</> : copyTrack === 'executive' ? <>Plan together.<br />Make it happen.</> : <>Big ideas start<br />with showing up.</>}</h2><p>{track === 'president' ? 'Recruit your executives, get events approved, and keep your mentor in the loop.' : copyTrack === 'student-affairs' ? 'Build strong club foundations and keep every community supported.' : copyTrack === 'mentor' ? 'Your guidance helps student leaders turn plans into progress.' : copyTrack === 'office-bearer' ? 'Welcome new members and help your club make its mark.' : copyTrack === 'executive' ? 'Your next event starts with one good idea.' : 'Meet a club, explore events, or start something new.'}</p>
                     <button className="button button-light" onClick={() => navigate(track === 'president' ? 'applications' : copyTrack === 'student-affairs' ? 'clubs' : copyTrack === 'mentor' ? 'members' : copyTrack === 'office-bearer' ? 'applications' : copyTrack === 'executive' ? 'events' : 'clubs')}>{track === 'president' ? 'Recruit executives' : copyTrack === 'student-affairs' ? 'Manage clubs' : copyTrack === 'mentor' ? 'Support club leaders' : copyTrack === 'office-bearer' ? 'Review applications' : track === 'executive' ? 'Explore events' : 'Find your community'} <ArrowRight size={16} /></button>
                   </div>
-                  <div className="banner-graphic" aria-hidden="true"><span className="graphic-ring ring-a" /><span className="graphic-ring ring-b" /><span className="graphic-star">✳</span><span className="graphic-caption">MAKE<br />IT YOURS</span><span className="graphic-orbit"><i /><i /><i /></span></div>
+                  <div className="banner-graphic" aria-hidden="true"><span className="graphic-ring ring-a" /><span className="graphic-ring ring-b" /><span className="graphic-caption">MAKE<br />IT YOURS</span><span className="graphic-orbit"><i /><i /><i /></span></div>
                 </section>}
 
-              <section className="stat-grid">
-                <StatCard icon={Compass} label="Clubs to explore" value={data.summary.clubs} foot="Find your corner of campus" tone="lavender" />
-                <StatCard icon={CalendarDays} label="Events on the calendar" value={data.events.filter((event) => event.status === 'approved').length} foot="More moments, less scrolling" tone="peach" />
-                <StatCard icon={Users} label="People showing up" value={data.summary.members} foot="Campus is better together" tone="mint" />
-                <StatCard icon={Clock3} label="Needs a little attention" value={canReview ? openApplications.length : data.applications.filter((app) => app.status === 'pending').length} foot={canReview ? 'Applications to review' : 'Membership applications'} tone="butter" />
-              </section>
+              {hasVerifiedClubAccess
+                ? <section className="stat-grid">
+                  <StatCard icon={CalendarDays} label="Club events" value={data.summary.events} foot="Proposals and scheduled events" tone="peach" />
+                  <StatCard icon={Laptop} label="Club equipment" value={data.summary.equipment} foot="Items available to request" tone="lavender" />
+                  <StatCard icon={FolderKanban} label="Event reports submitted" value={data.summary.reportsSubmitted || 0} foot="For this club only" tone="mint" />
+                  <StatCard icon={Users} label="Club members" value={data.summary.members} foot="Your verified club community" tone="butter" />
+                </section>
+                : <section className="stat-grid">
+                  <StatCard icon={Compass} label="Clubs to explore" value={data.summary.clubs} foot="Find your corner of campus" tone="lavender" />
+                  <StatCard icon={CalendarDays} label="Events on the calendar" value={data.events.filter((event) => event.status === 'approved').length} foot="More moments, less scrolling" tone="peach" />
+                  <StatCard icon={Users} label="People showing up" value={data.summary.members} foot="Campus is better together" tone="mint" />
+                  <StatCard icon={Clock3} label="Needs a little attention" value={isStudentAffairs
+                    ? notificationCounts.events + notificationCounts.funding + notificationCounts.eventReports
+                    : canReview ? openApplications.length : data.applications.filter((app) => app.status === 'pending').length}
+                  foot={isStudentAffairs ? 'Requests to review' : canReview ? 'Applications to review' : 'Membership applications'} tone="butter" />
+                </section>}
 
               <section className="portal-shortcuts" aria-label="Campus services">
                 <h2>Campus services</h2>
@@ -891,13 +1675,19 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
                 </div>
               </section>
 
-              {track === 'president' && <section className="president-desk surface-card">
-                <SectionHeading title="President’s desk" subtitle={`You lead ${data.memberships.filter((m) => m.membershipStatus !== 'pending' && m.position === 'president').map((m) => m.clubId?.name).filter(Boolean).join(', ') || 'your club'}.`} />
+              {(track === 'president' || track === 'verified-office-bearer') && <section className="president-desk surface-card">
+                <SectionHeading title={track === 'president' ? 'President’s desk' : `${verifiedClubName} account`} subtitle={track === 'president'
+                  ? `You lead ${data.memberships.filter((m) => m.membershipStatus !== 'pending' && m.position === 'president').map((m) => m.clubId?.name).filter(Boolean).join(', ') || 'your club'}.`
+                  : 'Your club sign-in is verified. Recruit members, view your roster, propose events, request funding and equipment, and submit reports for this club.'} />
                 <div className="president-actions">
-                  <button onClick={() => navigate('applications')}><Users size={17} /><strong>Recruit executives</strong><small>{openApplications.length} application{openApplications.length === 1 ? '' : 's'} waiting</small></button>
+                  {track === 'president' && <button onClick={() => navigate('applications')}><Users size={17} /><strong>Recruit executives</strong><small>{openApplications.length} application{openApplications.length === 1 ? '' : 's'} waiting</small></button>}
+                  {track === 'verified-office-bearer' && <button onClick={() => navigate('applications')}><Users size={17} /><strong>Membership & recruitment</strong><small>{openApplications.length} application{openApplications.length === 1 ? '' : 's'} waiting</small></button>}
+                  {track === 'verified-office-bearer' && <button onClick={() => navigate('members')}><Users size={17} /><strong>Club members</strong><small>View the verified club roster</small></button>}
                   <button onClick={() => navigate('events')}><CalendarDays size={17} /><strong>Plan an event</strong><small>Propose it to your mentor</small></button>
                   <button onClick={() => navigate('eventReports')}><FolderKanban size={17} /><strong>Event reports</strong><small>Submit after each event</small></button>
                   <button onClick={() => navigate('equipment')}><Laptop size={17} /><strong>Equipment</strong><small>Request club equipment</small></button>
+                  {track === 'verified-office-bearer' && <button onClick={() => navigate('funding')}><WalletCards size={17} /><strong>Funding</strong><small>Request club funding</small></button>}
+                  {track === 'verified-office-bearer' && <button onClick={() => navigate('reports')}><BarChart3 size={17} /><strong>Club reports</strong><small>{data.summary.reportsSubmitted || 0} event reports submitted</small></button>}
                 </div>
               </section>}
 
@@ -913,7 +1703,7 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
                   {!data.announcements.length && <EmptyState title="Nothing new just yet" text="Club updates will appear here." />}
                 </section>
               </div>
-              {role !== 'student' && <div className="insight-strip"><div className="insight-icon"><FolderKanban size={18} /></div><div><strong>Your community, at a glance</strong><span>{formatMoney(data.summary.spent)} spent of {formatMoney(data.summary.allocated)} allocated across club budgets.</span></div><button onClick={() => navigate('funding')}>Explore funding <ArrowRight size={15} /></button></div>}
+              {(role !== 'student' || hasVerifiedClubAccess) && !hasOfficeBearerAccess && <div className="insight-strip"><div className="insight-icon"><FolderKanban size={18} /></div><div><strong>Your community, at a glance</strong><span>{formatMoney(data.summary.spent)} spent of {formatMoney(data.summary.allocated)} allocated across club budgets.</span></div><button onClick={() => navigate('funding')}>Explore funding <ArrowRight size={15} /></button></div>}
             </>
           )}
 
@@ -930,6 +1720,7 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
                     application={application}
                     isMember={membershipClubIds.has(club._id)}
                     isAdmin={role === 'college_admin'}
+                    canApply={!profile.isClubAccount && role === 'student'}
                     onApply={() => { setSelectedClub(club); setModal('apply'); }}
                     onEdit={() => { setSelectedClub(club); setModal('editClub'); }}
                   />;
@@ -941,58 +1732,61 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
 
           {!problem && page === 'events' && (
             <div className="surface-card list-surface">
-              <SectionHeading title="Make a date with campus" subtitle="Good company is already on the calendar." />
+              <div className="workflow-heading"><SectionHeading title="Make a date with campus" subtitle="Good company is already on the calendar." /><WorkflowFilter value={workflowFilter} onChange={setWorkflowFilter} /></div>
               <div className="events-grid">
-              {data.events.map((event, index) => {
+              {data.events.filter((event) => statusMatchesFilter(event.status, workflowFilter)).map((event, index) => {
                 const clubId = event.clubId?._id || event.clubId;
                 const eventPosition = data.memberships.find((member) => (member.clubId?._id || member.clubId) === clubId);
-                const isEventLeader = role === 'college_admin' || Boolean(eventPosition && isLeadership(eventPosition));
-                const isPresident = eventPosition?.position === 'president';
-                const isMentor = String(event.clubId?.mentor?._id || event.clubId?.mentor || '') === String(profile._id);
+                const canTakeAttendance = Boolean(
+                  profile.isClubAccount
+                  && String(clubId) === String(profile.verifiedClubId)
+                );
+                const canSubmitClubRequest = Boolean(
+                  (profile.isClubAccount && String(clubId) === String(profile.verifiedClubId))
+                  || (eventPosition && (isLeadership(eventPosition)
+                    || (hasVerifiedClubAccess
+                      && String(clubId) === String(profile.verifiedClubId)
+                      && isOfficeBearerPosition(eventPosition))))
+                );
+                const isCampusOrganizerEvent = event.clubId?.organizationType === 'event_organizer';
+                const canEditEvent = isCampusOrganizerEvent
+                  ? isStudentAffairs && event.status === 'student_affairs_pending'
+                  : canSubmitClubRequest && !event.mentorReviewedBy && ['draft', 'mentor_pending'].includes(event.status);
                 const canReviewEvent = event.status === 'mentor_pending'
-                  ? isMentor
-                  : event.status === 'student_affairs_pending' && role === 'college_admin';
+                  ? role === 'faculty_coordinator' && hasPendingMentorApproval(event, profile._id)
+                  : event.status === 'student_affairs_pending' && isStudentAffairs;
                 return <div key={event._id} className="event-workflow">
-                  <EventRow event={event} index={index} canReview={canReviewEvent} isPresident={isPresident} onDetails={() => setSelectedEvent(event)} onReview={(status) => review('event', event, status)} onResubmit={() => perform(() => api(`/events/${event._id}/submit`, { method: 'PATCH' }), 'Event resubmitted to the club mentor.')} />
-                  {isEventLeader && event.status === 'approved' && <AttendancePanel event={event} onError={setToast} />}
-                  {isPresident && event.status === 'approved' && new Date(event.eventDate) <= new Date()
-                    && !data.eventReports.some((report) => (report.eventId?._id || report.eventId) === event._id)
-                    && <EventReportComposer event={event} onSubmit={refresh} />}
+                  <EventRow event={event} index={index} canReview={canReviewEvent} needsReview={canReviewEvent} canResubmit={canSubmitClubRequest} canEdit={canEditEvent} onEdit={() => { setEditingEvent(event); setModal('editEvent'); }} onDetails={() => setSelectedEvent(event)} onReview={(status) => review('event', event, status)} onResubmit={() => perform(() => api(`/events/${event._id}/submit`, { method: 'PATCH' }), 'Event resubmitted to the club mentor.')} />
+                  {canTakeAttendance && event.status === 'approved' && <AttendancePanel event={event} onError={setToast} />}
                 </div>;
               })}
-              {!data.events.length && <EmptyState title="The calendar is taking a breath" text="Approved campus events will show up here." />}
+              {!data.events.some((event) => statusMatchesFilter(event.status, workflowFilter)) && <EmptyState title="No events in this view" text={workflowFilter === 'all' ? 'Approved campus events will show up here.' : 'Try another status filter to see more events.'} />}
               </div>
             </div>
           )}
 
           {!problem && page === 'applications' && (
             <>
-            <div className="two-column-layout">
-              <section className="surface-card list-surface"><SectionHeading title={role === 'student' ? 'Your membership journey' : 'A few people are waiting'} subtitle={role === 'student'
-                ? 'Every great community starts somewhere.'
+            <section className="surface-card list-surface"><div className="workflow-heading"><SectionHeading title={role === 'student' ? 'Your membership journey' : 'A few people are waiting'} subtitle={role === 'student'
+                ? ''
                 : role === 'faculty_coordinator'
                   ? 'As a club mentor, review applications and recruit members before office bearers are appointed.'
-                  : 'Help someone find their people.'} />
+                  : 'Help someone find their people.'} /><WorkflowFilter value={workflowFilter} onChange={setWorkflowFilter} /></div>
                 {data.memberships.filter((membership) => membership.membershipStatus === 'pending').map((membership) => (
                   <PositionInvitation key={membership._id} membership={membership}
                     onRespond={(response) => respondToPositionInvite(membership, response)} />
                 ))}
-                {data.applications.map((application) => {
+                {data.applications.filter((application) => statusMatchesFilter(application.status, workflowFilter)).map((application) => {
                   const clubId = application.clubId?._id || application.clubId;
                   const applicationClub = data.clubs.find((club) => club._id === clubId);
-                  const isClubMentor = role === 'faculty_coordinator'
-                    && String(applicationClub?.mentor?._id || applicationClub?.mentor || '') === String(profile._id);
-                  const canReviewApplication = role === 'college_admin' || isClubMentor || data.memberships.some((membership) =>
-                    (membership.clubId?._id || membership.clubId) === clubId
-                    && membership.membershipStatus !== 'pending'
-                    && (['office_bearer', 'president', 'vice_president', 'treasurer', 'secretary'].includes(membership.position)
-                      || (membership.position === 'executive' && membership.officeBearerGroup)));
+                  const isAssignedMentor = role === 'faculty_coordinator'
+                    && isClubMentor(applicationClub, profile._id);
+                  const canReviewApplication = role === 'college_admin' || isAssignedMentor
+                    || (hasVerifiedClubAccess && String(clubId) === String(profile.verifiedClubId));
                   return <ApplicationRow key={application._id} application={application} isOwn={String(application.profileId?._id || application.profileId) === String(profile._id)} canReview={canReviewApplication} onReview={(status) => review('application', application, status)} />;
                 })}
-                {!data.applications.length && <EmptyState title="Nothing to review yet" text={role === 'student' ? 'Apply to a club and you’ll see your updates here.' : 'Club applications will appear here.'} />}
-              </section>
-              <aside className="surface-card tip-card"><span className="tip-spark"><Sparkles size={19} /></span><span className="eyebrow">A SMALL REMINDER</span><h3>There’s no one way to belong.</h3><p>Try a workshop, volunteer once, or just say hello. The best communities make space for every kind of curious.</p><button className="text-link" onClick={() => navigate('clubs')}>Find your people <ArrowRight size={15} /></button></aside>
-            </div>
+                {!data.applications.some((application) => statusMatchesFilter(application.status, workflowFilter)) && <EmptyState title="No applications in this view" text={workflowFilter === 'all' ? 'Club applications will appear here.' : 'Try another status filter to see more applications.'} />}
+            </section>
             {role === 'student' && <section className="surface-card participation-card"><SectionHeading title="Your campus moments" subtitle="A little record of the things you showed up for." />
               {data.participation.map((record) => <ParticipationRow key={record._id} record={record} />)}
               {!data.participation.length && <EmptyState title="Your story starts here" text="Events you attend will show up here as a keepsake." />}
@@ -1004,19 +1798,18 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
             <section className="surface-card member-surface">
               <div className="member-toolbar">
                 <SectionHeading title="The people who make it happen" subtitle={role === 'faculty_coordinator'
-                  ? 'Approve an application first, then invite that active member to an office-bearer position. They must accept the invitation.'
+                  ? ''
                   : 'A good community starts with good company.'} />
                 <label className="club-picker">Club<select value={memberClubId} onChange={(event) => setMemberClubId(event.target.value)} disabled={!memberClubList.length}>
                   {memberClubList.map((club) => <option key={club._id} value={club._id}>{club.name}</option>)}
                 </select></label>
+                <label className="workflow-filter"><input type="checkbox" checked={includeEndedMembers} onChange={(event) => setIncludeEndedMembers(event.target.checked)} /> Include past members</label>
               </div>
-              {memberClubId && (role === 'college_admin' || memberClubList.some((club) =>
-                String(club.mentor?._id || club.mentor || '') === String(profile._id))) && <form className="member-assign-form" onSubmit={assignMember}>
+              {memberClubId && (role === 'college_admin' || isClubMentor(memberClubList.find((club) => club._id === memberClubId), profile._id)) && <form className="member-assign-form" onSubmit={assignMember}>
                 <label className="field-label">Nominee<select name="profileId" required defaultValue=""><option value="" disabled>Select an active club member</option>{data.profiles.filter((person) => ['student', 'club_committee'].includes(person.role)
                   && members.some((member) => String(member.profileId?._id || member.profileId) === String(person._id)
                     && member.membershipStatus === 'active')).map((person) => <option key={person._id} value={person._id}>{person.name} · {person.email}</option>)}</select></label>
                 <label className="field-label">Invite for position<select name="position"><option value="president">President</option><option value="vice_president">Vice president</option><option value="treasurer">Treasurer</option><option value="secretary">Secretary</option><option value="office_bearer">Office bearer</option></select></label>
-                <label className="field-label">Custom position title (optional)<input name="positionTitle" maxLength={80} placeholder="e.g. Creative Director" /></label>
                 <button className="button button-primary" type="submit"><Plus size={15} /> Send invitation</button>
               </form>}
               {memberActionError && <div className="notice notice-error" role="alert">{memberActionError}</div>}
@@ -1024,8 +1817,10 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
               {!memberClubList.length ? <EmptyState title="No club roster access" text="A club's office bearers and Student Affairs can view its member list." /> :
                 members.length ? members.map((member) => {
                   const selectedClub = memberClubList.find((club) => club._id === memberClubId);
-                  const isAssignedMentor = String(selectedClub?.mentor?._id || selectedClub?.mentor || '') === String(profile._id);
-                  return <MemberRow key={member._id} member={member} canEdit={isAssignedMentor || role === 'college_admin'} canRemove={isAssignedMentor || role === 'college_admin'} onRemove={() => removeMember(member)} onRoleChange={(position, positionTitle, officeBearerGroup) => updateMemberRole(member._id, { position, positionTitle, officeBearerGroup })} />;
+                  const isAssignedMentor = isClubMentor(selectedClub, profile._id);
+                  const isPastMember = member.membershipStatus === 'ended';
+                  const canRemoveMember = isAssignedMentor || role === 'college_admin';
+                  return <MemberRow key={member._id} member={member} canEdit={!isPastMember && (isAssignedMentor || role === 'college_admin')} canRemove={!isPastMember && canRemoveMember} onRemove={() => removeMember(member)} onRoleChange={(position, officeBearerGroup) => updateMemberRole(member._id, { position, officeBearerGroup })} />;
                 }) :
                   !membersError && <EmptyState title="The first hello is still ahead" text="No one has joined this club yet." />}
             </section>
@@ -1037,10 +1832,16 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
                 <SectionHeading title="Club conversations" subtitle="Member chat is for club members; the OB room stays private to office bearers." />
                 <div className="chat-controls">
                   <label className="club-picker">Club<select value={chatClubId} onChange={(event) => setChatClubId(event.target.value)}>
-                    {data.managedClubs.map((club) => <option key={club._id} value={club._id}>{club.name}</option>)}
+                    {data.managedClubs.map((club) => {
+                      const clubUnread = Object.entries(unreadChatCounts)
+                        .filter(([roomKey]) => roomKey.startsWith(`${club._id}:`))
+                        .reduce((total, [, count]) => total + count, 0);
+                      return <option key={club._id} value={club._id}>{club.name}{clubUnread ? ` · ${clubUnread} new` : ''}</option>;
+                    })}
                   </select></label>
                   <label className="club-picker">Room<select value={chatGroup} onChange={(event) => setChatGroup(event.target.value)}>
-                    <option value="members">Club members</option><option value="office_bearers">Office bearers (private)</option>
+                    <option value="members">Club members{unreadChatCounts[`${chatClubId}:members`] ? ` · ${unreadChatCounts[`${chatClubId}:members`]} new` : ''}</option>
+                    <option value="office_bearers">Office bearers (private){unreadChatCounts[`${chatClubId}:office_bearers`] ? ` · ${unreadChatCounts[`${chatClubId}:office_bearers`]} new` : ''}</option>
                   </select></label>
                 </div>
               </div>
@@ -1058,19 +1859,26 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
               <div className="resource-grid">
                 {data.equipment.map((item, index) => {
                   const clubId = item.clubId?._id || item.clubId;
-                  const activeBorrow = data.borrows.find((borrow) => borrow.equipmentId?._id === item._id && String(borrow.profileId?._id || borrow.profileId) === String(profile._id));
-                  const isPresident = data.memberships.some((membership) =>
-                    (membership.clubId?._id || membership.clubId) === clubId && membership.position === 'president');
-                  return <EquipmentCard key={item._id} equipment={item} index={index} isPresident={isPresident} activeBorrow={activeBorrow} onBorrow={() => perform(() => api('/equipment-borrows', { method: 'POST', body: { equipmentId: item._id, clubId, dueDate: new Date(Date.now() + 7 * 86400000).toISOString() } }), 'Request sent to your club mentor and Student Affairs.')} onReturn={() => perform(() => api(`/equipment-borrows/${activeBorrow._id}/return`, { method: 'PATCH' }), 'Thanks for bringing it back.') } />;
+                  const activeBorrow = data.borrows.find((borrow) => borrow.equipmentId?._id === item._id
+                    && (String(borrow.profileId?._id || borrow.profileId) === String(profile._id)
+                      || (profile.isClubAccount && String(borrow.clubId?._id || borrow.clubId) === String(profile.verifiedClubId))));
+                  const canRequestEquipment = Boolean(profile.isClubAccount && String(clubId) === String(profile.verifiedClubId))
+                    || data.memberships.some((membership) =>
+                    (membership.clubId?._id || membership.clubId) === clubId
+                    && (isLeadership(membership)
+                      || (hasVerifiedClubAccess
+                        && String(clubId) === String(profile.verifiedClubId)
+                        && isOfficeBearerPosition(membership))));
+                  return <EquipmentCard key={item._id} equipment={item} index={index} isPresident={canRequestEquipment} activeBorrow={activeBorrow} onBorrow={() => { setSelectedEquipment(item); setModal('borrow'); }} onReturn={() => perform(() => api(`/equipment-borrows/${activeBorrow._id}/return`, { method: 'PATCH' }), 'Thanks for bringing it back.') } />;
                 })}
                 {!data.equipment.length && <EmptyState title="Nothing in the loan cupboard yet" text="Club equipment will be listed here when it’s available." />}
               </div>
               {data.borrows.some((borrow) => ['mentor_pending', 'student_affairs_pending'].includes(borrow.status)) && <section className="surface-card list-surface workflow-list">
                 <SectionHeading title="Equipment approvals" subtitle="Requests move from the club mentor to Student Affairs." />
                 {data.borrows.filter((borrow) => ['mentor_pending', 'student_affairs_pending'].includes(borrow.status)).map((borrow) => {
-                  const club = data.clubs.find((item) => item._id === (borrow.clubId?._id || borrow.clubId));
-                  const mentorReview = borrow.status === 'mentor_pending' && String(club?.mentor?._id || club?.mentor || '') === String(profile._id);
-                  const affairsReview = borrow.status === 'student_affairs_pending' && role === 'college_admin';
+                  const mentorReview = borrow.status === 'mentor_pending' && role === 'faculty_coordinator'
+                    && hasPendingMentorApproval(borrow, profile._id);
+                  const affairsReview = borrow.status === 'student_affairs_pending' && isStudentAffairs;
                   return <BorrowApprovalRow key={borrow._id} borrow={borrow} canReview={mentorReview || affairsReview} onReview={(status) => review('borrow', borrow, status)} />;
                 })}
               </section>}
@@ -1078,19 +1886,17 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
           )}
 
           {!problem && page === 'funding' && (
-            <div className="content-grid funding-layout">
-              <section className="surface-card list-surface"><SectionHeading title="Funding & club budgets" subtitle="Good plans deserve a little support." />
-                <div className="budget-highlight"><span className="budget-label">CAMPUS CLUBS · TOTAL SPENT</span><strong>{formatMoney(data.summary.spent)}</strong><div className="budget-progress"><i style={{ width: `${data.summary.allocated ? Math.min(data.summary.spent / data.summary.allocated * 100, 100) : 0}%` }} /></div><span className="budget-foot">{formatMoney(data.summary.allocated)} total allocated</span></div>
-                {data.funding.map((item) => {
-                  const requestClubId = item.clubId?._id || item.clubId;
-                  const mentor = data.clubs.find((club) => club._id === requestClubId)?.mentor;
-                  return <FundingRow key={item._id} request={item} canReview={role === 'college_admin' || String(mentor?._id || mentor || '') === String(profile._id)} onReview={(status) => review('funding', item, status)} />;
+            <section className="surface-card list-surface funding-page">
+                <SpendingChart transactions={data.transactions} />
+                <div className="workflow-heading"><SectionHeading title="Funding requests" /><WorkflowFilter value={workflowFilter} onChange={setWorkflowFilter} /></div>
+                {data.funding.filter((item) => statusMatchesFilter(item.status, workflowFilter)).map((item) => {
+                  const canReviewFunding = (['pending', 'mentor_pending'].includes(item.status)
+                    && role === 'faculty_coordinator' && hasPendingMentorApproval(item, profile._id))
+                    || (item.status === 'student_affairs_pending' && isStudentAffairs);
+                  return <FundingRow key={item._id} request={item} canReview={canReviewFunding} onReview={(status) => review('funding', item, status)} />;
                 })}
-                {!data.funding.length && <EmptyState title="Space for a bright idea" text="Funding requests from your clubs will show up here." />}
-                {data.transactions.length > 0 && <><SectionHeading title="Recent ledger activity" subtitle="The numbers behind plans in motion." />{data.transactions.slice(0, 6).map((transaction) => <TransactionRow key={transaction._id} transaction={transaction} />)}</>}
-              </section>
-              <aside className="surface-card money-note"><div className="money-icon"><HandCoins size={20} /></div><h3>Make a plan happen.</h3><p>Club committees can send a funding request to their faculty coordinator. Approved funds are recorded in the club ledger.</p><div className="money-note-bottom"><CreditCard size={17} /><span>Transparent by design</span></div></aside>
-            </div>
+                {!data.funding.some((item) => statusMatchesFilter(item.status, workflowFilter)) && <EmptyState title="No funding requests in this view" text="Try another status filter or return when a club submits a request." />}
+            </section>
           )}
 
           {!problem && page === 'reports' && (
@@ -1100,13 +1906,14 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
                 <ReportStat label="Members" value={data.summary.members} tone="mint" />
                 <ReportStat label="Events" value={data.summary.events} tone="peach" />
                 <ReportStat label="Pending applications" value={data.summary.pendingApplications} tone="butter" />
+                <ReportStat label="Event reports submitted" value={data.summary.reportsSubmitted || 0} tone="lavender" />
               </div>
               <div className="report-table surface-card">
-                <SectionHeading title="Club activity" subtitle="Membership, events, and announcements—one clear view." />
-                <div className="report-table-head"><span>Community</span><span>Members</span><span>Events</span><span>Activity</span><span>Budget</span></div>
+                <SectionHeading title="Club activity" subtitle="Membership, events, reports, and announcements—one clear view." />
+                <div className="report-table-head"><span>Community</span><span>Members</span><span>Events</span><span>Reports</span><span>Activity</span><span>Budget</span></div>
                 {(data.summary.clubReports || []).map((club) => <div className="report-table-row" key={club._id}>
                   <div className="report-club"><span className="report-club-mark">{initials(club.name)}</span><span><strong>{club.name}</strong><small>{club.category || 'Campus community'}</small></span></div>
-                  <span>{club.members}</span><span>{club.events}</span><span>{club.announcements} updates</span>
+                  <span>{club.members}</span><span>{club.events}</span><span>{club.reportsSubmitted || 0}</span><span>{club.announcements} updates</span>
                   <span>{role === 'student' ? '—' : <>{formatMoney(club.spent)} <small>of {formatMoney(club.allocated)}</small></>}</span>
                 </div>)}
                 {!data.summary.clubReports?.length && <EmptyState title="No club reports yet" text="Reports for the clubs you manage will appear here." />}
@@ -1115,32 +1922,57 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
             </section>
           )}
 
+          {!problem && page === 'credentialRequests' && (
+            <section className="surface-card list-surface">
+              <SectionHeading title="Club login changes" subtitle="Review ICTS requests before any shared club email or password is changed." />
+              {data.credentialRequests.map((change) => <article className="application-row" key={change._id}>
+                <div className="application-details">
+                  <div className="application-title"><strong>{change.clubId?.name || 'Club'}</strong><span className={statusClass(change.status)}>{change.status}</span></div>
+                  <p>Requested by {change.requestedBy?.name || change.requestedBy?.email || 'ICTS'}</p>
+                  <small>{change.clubLoginEmail ? `New email: ${change.clubLoginEmail}` : 'Email unchanged'} · {change.passwordChangeRequested ? 'New password supplied (hidden)' : 'Password unchanged'}</small>
+                </div>
+                {change.status === 'pending' && <div className="review-actions">
+                  <button className="review-accept" type="button" aria-label="Approve club login change" onClick={() => reviewClubCredentialChange(change, 'approved')}><Check size={15} /></button>
+                  <button className="review-decline" type="button" aria-label="Reject club login change" onClick={() => reviewClubCredentialChange(change, 'rejected')}><X size={15} /></button>
+                </div>}
+              </article>)}
+              {!data.credentialRequests.length && <EmptyState title="No club login changes to review" text="New ICTS requests will be listed here before they can be applied." />}
+            </section>
+          )}
+
           {page === 'profile' && <ProfilePage profile={profile} onSaved={onProfileUpdate} notify={setToast} />}
 
           {!problem && page === 'eventReports' && (
             <section className="surface-card list-surface">
-              <SectionHeading title="Event reports & OD attendance" subtitle="Presidents submit a detailed report after each event. The mentor reviews it before Student Affairs." />
-              {data.eventReports.map((report) => {
+              <div className="workflow-heading"><SectionHeading title="Event reports & OD attendance" /><WorkflowFilter value={workflowFilter} onChange={setWorkflowFilter} /></div>
+              {data.eventReports.filter((report) => statusMatchesFilter(report.status, workflowFilter)).map((report) => {
                 const clubId = report.clubId?._id || report.clubId;
-                const club = data.clubs.find((item) => item._id === clubId);
-                const isPresident = data.memberships.some((membership) =>
-                  (membership.clubId?._id || membership.clubId) === clubId && membership.position === 'president');
-                const canReviewReport = (report.status === 'mentor_pending' && String(club?.mentor?._id || club?.mentor || '') === String(profile._id))
-                  || (report.status === 'student_affairs_pending' && role === 'college_admin');
-                return <ReportRow key={report._id} report={report} isPresident={isPresident} canReview={canReviewReport}
+                const canSubmitReport = data.memberships.some((membership) =>
+                  (membership.clubId?._id || membership.clubId) === clubId
+                  && (isLeadership(membership)
+                    || (hasVerifiedClubAccess
+                      && String(clubId) === String(profile.verifiedClubId)
+                      && isOfficeBearerPosition(membership))));
+                const canReviewReport = (report.status === 'mentor_pending'
+                  && role === 'faculty_coordinator' && hasPendingMentorApproval(report, profile._id))
+                  || (report.status === 'student_affairs_pending' && isStudentAffairs);
+                return <ReportRow key={report._id} report={report} canResubmit={canSubmitReport} canReview={canReviewReport}
                   onReview={(status) => review('eventReport', report, status)}
                   onDownload={() => apiDownload(`/event-reports/${report._id}/roster`, report.rosterFileName || 'event-attendance.csv')
                     .catch((error) => setToast(error.message))}
                   onResubmit={(values) => api(`/event-reports/${report._id}/resubmit`, { method: 'PATCH', body: values }).then(refresh)}
                   onError={setToast} />;
               })}
-              {!data.eventReports.length && <EmptyState title="No event reports submitted" text="When a club event is complete, its president can submit the detailed report here." />}
+              {!data.eventReports.some((report) => statusMatchesFilter(report.status, workflowFilter)) && <EmptyState title="No event reports in this view" text={workflowFilter === 'all' ? 'Reports appear here after a club executive submits one for review.' : 'Try another status filter to see more reports.'} />}
             </section>
           )}
 
           {!problem && page === 'announcements' && (
             <section className="announcement-list">
-              {data.announcements.map((note) => <article className="surface-card announcement-full" key={note._id}><div className={`announcement-symbol ${note.priority === 'high' ? 'symbol-warm' : ''}`}><Megaphone size={19} /></div><div className="announcement-content"><div className="announcement-meta"><span>{note.clubId?.name || 'Campus community'}</span><span>·</span><span>{formatDate(note.postedDate)}</span>{note.priority === 'high' && <span className="priority-label">IMPORTANT</span>}</div><h3>{note.title}</h3><p>{note.content}</p></div></article>)}
+              {data.announcements.map((note) => {
+                const isNew = !seenAnnouncementIds.includes(note._id);
+                return <article className={`surface-card announcement-full ${isNew ? 'announcement-unread' : ''}`} key={note._id}><div className={`announcement-symbol ${note.priority === 'high' ? 'symbol-warm' : ''}`}><Megaphone size={19} /></div><div className="announcement-content"><div className="announcement-meta"><span>{note.clubId?.name || 'Campus community'}</span><span>·</span><span>{formatDate(note.postedDate)}</span>{isNew && <span className="announcement-new-label">NEW</span>}{note.priority === 'high' && <span className="priority-label">IMPORTANT</span>}</div><h3>{note.title}</h3><p>{note.content}</p></div></article>;
+              })}
               {!data.announcements.length && <EmptyState title="A quiet noticeboard" text="When clubs share an update, you’ll find it here." />}
             </section>
           )}
@@ -1163,14 +1995,26 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
       />}
       {modal && <Modal
         type={modal}
-        clubs={modal === 'apply' ? data.clubs : modal === 'event' ? eventClubList : memberClubList}
+        clubs={modal === 'apply' ? data.clubs : ['event', 'editEvent'].includes(modal) ? (isStudentAffairs ? data.clubs : eventClubList) : memberClubList}
+        allClubs={data.clubs}
+        eventOrganizers={data.eventOrganizers}
         profiles={data.profiles}
         venues={data.venues}
+        reportEvents={reportableEvents}
+        equipmentItems={borrowableEquipment}
+        events={data.events}
+        selectedEquipment={modal === 'borrow' ? selectedEquipment : null}
         profile={profile}
-        selectedClub={modal === 'club' ? null : modal === 'apply' || modal === 'editClub' ? selectedClub : modal === 'event' ? eventClubList[0] : memberClubList[0]}
+        selectedClub={modal === 'club' ? null : modal === 'apply' || modal === 'editClub' ? selectedClub : ['event', 'editEvent'].includes(modal) ? eventClubList[0] : memberClubList[0]}
+        selectedEvent={modal === 'editEvent' ? editingEvent : null}
         busy={busy}
-        onClose={() => setModal('')}
+        onClose={() => { setModal(''); setEditingEvent(null); setSelectedEquipment(null); }}
         onSubmit={createRecord}
+      />}
+      {rejectionRequest && <RejectionFeedbackDialog
+        kind={rejectionRequest.kind}
+        onClose={() => setRejectionRequest(null)}
+        onSubmit={submitRejection}
       />}
     </div>
   );
@@ -1265,7 +2109,7 @@ function PasswordCard() {
 
   return (
     <section className="surface-card member-surface">
-      <SectionHeading title="Change password" subtitle="Your password is stored securely by Supabase Auth, never in my AMRITA’s records." />
+      <SectionHeading title="Change password" subtitle="Your password is stored securely by Supabase Auth, never in Amrita Sangam’s records." />
       <form className="profile-form" onSubmit={changePassword}>
         <label className="field-label">Current password<input type="password" value={pw.current} onChange={(event) => setPw({ ...pw, current: event.target.value })} required autoComplete="current-password" /></label>
         <label className="field-label">New password<input type="password" value={pw.next} onChange={(event) => setPw({ ...pw, next: event.target.value })} required minLength={8} autoComplete="new-password" /></label>
@@ -1336,8 +2180,104 @@ function ProfilePage({ profile, onSaved, notify }) {
   );
 }
 
+function IctsEditAccountModal({ person, onClose, onSaved }) {
+  const [role, setRole] = useState(person.role);
+  const [department, setDepartment] = useState(person.department || '');
+  const [section, setSection] = useState(person.section || accountDepartments[person.department]?.sections[0] || '');
+  const [adminType, setAdminType] = useState(person.adminType || 'student_affairs');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const years = Array.from(
+    { length: new Date().getFullYear() - 2000 + 2 },
+    (_, index) => new Date().getFullYear() + 1 - index,
+  );
+  const isStudent = role === 'student';
+  const isAdmin = role === 'college_admin';
+  const sectionOptions = accountDepartments[department]?.sections || [];
+
+  const submit = async (event) => {
+    event.preventDefault();
+    setBusy(true);
+    setError('');
+    const values = Object.fromEntries(new FormData(event.currentTarget).entries());
+    if (!values.password) delete values.password;
+    try {
+      await api(`/profiles/${encodeURIComponent(person._id)}`, { method: 'PATCH', body: {
+        ...values,
+        role,
+        ...(isAdmin ? { adminType } : { department }),
+        ...(isStudent ? { section } : {}),
+      } });
+      await onSaved();
+    } catch (problem) {
+      setError(problem.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose(); }}>
+    <section className="modal-card icts-edit-modal" role="dialog" aria-modal="true" aria-labelledby="edit-account-title">
+      <div className="modal-heading"><div><span className="eyebrow">ICTS ACCOUNT DESK</span><h2 id="edit-account-title">Edit account</h2></div><button className="icon-button" type="button" onClick={onClose} aria-label="Close account editor"><X size={17} /></button></div>
+      <form className="modal-form" onSubmit={submit}>
+        <div className="form-row">
+          <label className="field-label">Full name<input name="name" defaultValue={person.name} maxLength={100} required /></label>
+          <label className="field-label">Email / login ID<input name="email" type="email" defaultValue={person.email} required /></label>
+        </div>
+        <label className="field-label">Account type<select value={role} onChange={(event) => {
+          const nextRole = event.target.value;
+          setRole(nextRole);
+          if (nextRole === 'student' && !accountDepartments[department]) {
+            setDepartment('CSE');
+            setSection('A');
+          } else if (nextRole === 'faculty_coordinator' && !facultyDepartments.includes(department)) {
+            setDepartment('ECE');
+          }
+        }}>
+          <option value="student">Student</option><option value="faculty_coordinator">Faculty mentor</option><option value="college_admin">Admin</option>
+        </select></label>
+        {isAdmin ? <>
+          <label className="field-label">Admin type<select value={adminType} onChange={(event) => setAdminType(event.target.value)}>
+            <option value="student_affairs">Student Affairs</option><option value="principal">Principal</option><option value="other_authority">Other authority</option>
+          </select></label>
+          {adminType === 'other_authority' && <label className="field-label">Authority / designation<select name="designation" defaultValue={person.designation || ''} required>
+            <option value="" disabled>Select designation</option>{authorityDesignations.map((designation) => <option key={designation} value={designation}>{designation}</option>)}
+          </select></label>}
+        </> : <>
+          <div className="form-row">
+            <label className="field-label">Department<select value={department} onChange={(event) => {
+              const next = event.target.value;
+              setDepartment(next);
+              setSection(accountDepartments[next]?.sections[0] || '');
+            }} required>
+              {isStudent ? Object.keys(accountDepartments).map((code) => <option key={code} value={code}>{code}</option>) : facultyDepartments.map((code) => <option key={code} value={code}>{code}</option>)}
+            </select></label>
+            <label className="field-label">Year of joining<select name="joiningYear" defaultValue={person.joiningYear || new Date().getFullYear()} required>
+              {years.map((year) => <option key={year} value={year}>{year}</option>)}
+            </select></label>
+          </div>
+          {isStudent && <label className="field-label">Section<select value={section} onChange={(event) => setSection(event.target.value)} required>
+            {sectionOptions.map((code) => <option key={code} value={code}>Section {code}</option>)}
+          </select></label>}
+        </>}
+        <div className="form-row">
+          <label className="field-label">Phone number<input name="phone" defaultValue={person.phone || ''} maxLength={20} inputMode="tel" /></label>
+          <label className="field-label">New password <span className="muted-copy">(optional)</span><input name="password" type="password" minLength={8} autoComplete="new-password" /><small>Leave blank to keep the current password.</small></label>
+        </div>
+        <label className="field-label">About<textarea name="bio" defaultValue={person.bio || ''} maxLength={500} rows="3" /></label>
+        {error && <div className="notice notice-error" role="alert">{error}</div>}
+        <div className="modal-actions"><button className="button button-outline" type="button" onClick={onClose} disabled={busy}>Cancel</button><button className="button button-primary" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save account'}</button></div>
+      </form>
+    </section>
+  </div>;
+}
+
 function IctsDashboard({ onLogout, theme, onToggleTheme }) {
+  const [view, setView] = useState('accounts');
   const [people, setPeople] = useState([]);
+  const [credentialClubs, setCredentialClubs] = useState([]);
+  const [credentialRequests, setCredentialRequests] = useState([]);
+  const [credentialError, setCredentialError] = useState('');
   const [loadError, setLoadError] = useState('');
   const [kind, setKind] = useState('faculty_coordinator');
   const [busy, setBusy] = useState(false);
@@ -1346,18 +2286,40 @@ function IctsDashboard({ onLogout, theme, onToggleTheme }) {
   const [query, setQuery] = useState('');
   const [formKey, setFormKey] = useState(0);
   const [adminType, setAdminType] = useState('student_affairs');
+  const [department, setDepartment] = useState('CSE');
+  const [section, setSection] = useState('A');
   const [deletingId, setDeletingId] = useState('');
+  const [editingPerson, setEditingPerson] = useState(null);
+  const joiningYears = Array.from(
+    { length: new Date().getFullYear() - 2000 + 2 },
+    (_, index) => new Date().getFullYear() + 1 - index,
+  );
+  const departmentSections = accountDepartments[department]?.sections || [];
+  const departmentOptions = kind === 'faculty_coordinator' ? facultyDepartments : accountDepartments;
 
   const load = useCallback(async () => {
     try { setPeople(await api('/profiles')); setLoadError(''); } catch (problem) { setLoadError(problem.message); }
   }, []);
-  useEffect(() => { load(); }, [load]);
+  const loadCredentialDesk = useCallback(async () => {
+    try {
+      const [clubs, requests] = await Promise.all([
+        api('/clubs'),
+        api('/club-credential-change-requests'),
+      ]);
+      setCredentialClubs(clubs.filter((club) => club.organizationType !== 'event_organizer'));
+      setCredentialRequests(requests);
+      setCredentialError('');
+    } catch (problem) {
+      setCredentialError(problem.message);
+    }
+  }, []);
+  useEffect(() => { load(); loadCredentialDesk(); }, [load, loadCredentialDesk]);
 
   const needsDetails = kind !== 'college_admin';
   const kinds = [
     { id: 'college_admin', label: 'Admin', hint: 'Student Affairs, Principal or another authority; multiple accounts are allowed' },
     { id: 'faculty_coordinator', label: 'Faculty', hint: 'Gets a faculty ID like FA23CSE001' },
-    { id: 'student', label: 'Student', hint: 'Gets a student ID like CSE23001' },
+    { id: 'student', label: 'Student', hint: 'Gets a roll number like BL.SC.U4CSE25204' },
   ];
 
   const createAccount = async (event) => {
@@ -1369,11 +2331,22 @@ function IctsDashboard({ onLogout, theme, onToggleTheme }) {
     try {
       const created = await api('/profiles', {
         method: 'POST',
-        body: { ...values, role: kind, ...(kind === 'college_admin' ? { adminType } : {}) },
+        body: {
+          ...values,
+          role: kind,
+          ...(kind === 'college_admin' ? { adminType } : {}),
+          ...(needsDetails ? { department } : {}),
+          ...(kind === 'student' ? {
+            section,
+            schoolCode: accountDepartments[department].schoolCode,
+          } : {}),
+        },
       });
       const id = created.facultyId || created.registerNumber;
       setNotice({ type: 'ok', text: `${created.name}’s login was created in Supabase Auth and their profile in MongoDB.${id ? ` ID: ${id}` : ''}` });
       setFormKey((key) => key + 1);
+      setDepartment('CSE');
+      setSection('A');
       await load();
     } catch (problem) {
       setNotice({ type: 'error', text: problem.message });
@@ -1397,18 +2370,49 @@ function IctsDashboard({ onLogout, theme, onToggleTheme }) {
     }
   };
 
+  const requestClubCredentials = async (event) => {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const values = Object.fromEntries(new FormData(form).entries());
+    setBusy(true);
+    setNotice({ type: '', text: '' });
+    try {
+      await api('/club-credential-change-requests', { method: 'POST', body: values });
+      form.reset();
+      setNotice({ type: 'ok', text: 'The club credential change was sent to Student Affairs for approval.' });
+      await loadCredentialDesk();
+    } catch (problem) {
+      setNotice({ type: 'error', text: problem.message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const applyClubCredentials = async (change) => {
+    setBusy(true);
+    setNotice({ type: '', text: '' });
+    try {
+      await api(`/club-credential-change-requests/${change._id}/apply`, { method: 'PATCH' });
+      setNotice({ type: 'ok', text: 'The approved club credentials are active.' });
+      await loadCredentialDesk();
+    } catch (problem) {
+      setNotice({ type: 'error', text: problem.message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const visible = people
     .filter((person) => person.role !== 'icts' && (filter === 'all' || person.role === filter))
     .filter((person) => `${person.name} ${person.email} ${person.facultyId || ''} ${person.registerNumber || ''} ${person.designation || ''} ${person.adminType || ''}`.toLowerCase().includes(query.toLowerCase()));
-  const [view, setView] = useState('accounts');
-
   return (
     <div className="app-shell shell-icts icts-shell">
       <main className="main-panel icts-main">
         <header className="topbar">
-          <div className="breadcrumbs"><span>my AMRITA</span><span className="crumb-slash">/</span><strong>ICTS</strong></div>
+          <div className="breadcrumbs"><span>Amrita Sangam</span><span className="crumb-slash">/</span><strong>ICTS</strong></div>
           <div className="topbar-right">
             <button className={`button ${view === 'accounts' ? 'button-primary' : 'button-outline'}`} onClick={() => setView('accounts')}>Accounts</button>
+            <button className={`button ${view === 'club-logins' ? 'button-primary' : 'button-outline'}`} onClick={() => setView('club-logins')}><KeyRound size={14} /> Club logins</button>
             <button className={`button ${view === 'password' ? 'button-primary' : 'button-outline'}`} onClick={() => setView('password')}><KeyRound size={14} /> Password</button>
             <span className="role-pill">ICTS</span>
             <ThemeToggle theme={theme} onToggle={onToggleTheme} />
@@ -1416,22 +2420,45 @@ function IctsDashboard({ onLogout, theme, onToggleTheme }) {
           </div>
         </header>
         <div className="page-content">
-          <div className="page-heading"><div><span className="eyebrow">ICTS DEPARTMENT</span><h1>Account desk</h1><p>Create admin, faculty and student logins. Sign-in credentials are stored in Supabase; my AMRITA profiles are stored in MongoDB.</p></div></div>
+          <div className="page-heading"><div><span className="eyebrow">ICTS DEPARTMENT</span><h1>Account desk</h1><p>Create admin, faculty and student logins. Sign-in credentials are stored in Supabase; Amrita Sangam profiles are stored in MongoDB.</p></div></div>
           {loadError && <div className="notice notice-error" role="alert">{loadError}</div>}
 
           {view === 'password' && <div className="profile-page"><PasswordCard /></div>}
 
+          {view === 'club-logins' && <>
+            <section className="surface-card member-surface">
+              <SectionHeading title="Request a club login change" subtitle="Student Affairs must approve each email or password update before ICTS can apply it." />
+              {credentialError && <div className="notice notice-error" role="alert">{credentialError}</div>}
+              <form className="account-create-form" onSubmit={requestClubCredentials}>
+                <label className="field-label">Club<select name="clubId" required defaultValue=""><option value="" disabled>Select a club</option>{credentialClubs.map((club) => <option key={club._id} value={club._id}>{club.name}</option>)}</select></label>
+                <label className="field-label">New shared login email<input name="clubLoginEmail" type="email" autoComplete="off" /></label>
+                <label className="field-label">New shared login password<input name="clubLoginPassword" type="password" minLength={8} maxLength={256} autoComplete="new-password" /><small>For existing logins, leave a field blank to keep its current value. First-time setup requires both email and password. Supabase Auth manages active passwords; pending changes are encrypted until approved and applied.</small></label>
+                {notice.text && <div className={`notice notice-${notice.type}`} role="status">{notice.text}</div>}
+                <button className="button button-primary" type="submit" disabled={busy}>Send for approval <ArrowRight size={15} /></button>
+              </form>
+            </section>
+            <section className="surface-card member-surface">
+              <SectionHeading title="Club login change history" />
+              {credentialRequests.map((change) => <article className="application-row" key={change._id}>
+                <div className="application-details">
+                  <div className="application-title"><strong>{change.clubId?.name || 'Club'}</strong><span className={statusClass(change.status)}>{change.status}</span></div>
+                  <small>Requested by {change.requestedBy?.name || change.requestedBy?.email || 'ICTS'} · {change.clubLoginEmail ? `Email: ${change.clubLoginEmail}` : 'Email unchanged'} · {change.passwordChangeRequested ? 'Password change included' : 'Password unchanged'}{change.rejectionFeedback ? ` · Rejected: ${change.rejectionFeedback}` : ''}</small>
+                </div>
+                {change.status === 'approved' && <button className="button button-primary" type="button" disabled={busy} onClick={() => applyClubCredentials(change)}>Apply approved change</button>}
+              </article>)}
+              {!credentialRequests.length && !credentialError && <EmptyState title="No pending club login changes" text="ICTS requests awaiting Student Affairs approval will appear here." />}
+            </section>
+          </>}
+
           {view === 'accounts' && <>
             <section className="surface-card member-surface">
               <SectionHeading title="Create an account" subtitle="Choose who you are creating the login for." />
-              <div className="kind-options" role="radiogroup" aria-label="Account type">
-                {kinds.map((option) => (
-                  <button key={option.id} type="button" role="radio" aria-checked={kind === option.id} disabled={option.disabled}
-                    className={`kind-option ${kind === option.id ? 'kind-active' : ''}`} onClick={() => setKind(option.id)}>
-                    <strong>{option.label}</strong><small>{option.hint}</small>
-                  </button>
-                ))}
-              </div>
+              <label className="field-label">Account type
+                <select value={kind} onChange={(event) => setKind(event.target.value)}>
+                  {kinds.map((option) => <option key={option.id} value={option.id} disabled={option.disabled}>{option.label}</option>)}
+                </select>
+              </label>
+              <small className="muted-copy">{kinds.find((option) => option.id === kind)?.hint}</small>
               <form className="account-create-form" key={formKey} onSubmit={createAccount}>
                 <label className="field-label">Full name<input name="name" required maxLength={100} autoComplete="off" /></label>
                 <label className="field-label">Email (login ID)<input name="email" type="email" required autoComplete="off" /></label>
@@ -1444,11 +2471,40 @@ function IctsDashboard({ onLogout, theme, onToggleTheme }) {
                       <option value="other_authority">Other authority</option>
                     </select>
                   </label>
-                  {adminType === 'other_authority' && <label className="field-label">Authority / designation<input name="designation" required maxLength={100} placeholder="For example, Dean of Academics" /></label>}
+                  {adminType === 'other_authority' && <label className="field-label">Authority / designation
+                    <select name="designation" required defaultValue="">
+                      <option value="" disabled>Select designation</option>
+                      {authorityDesignations.map((designation) => <option key={designation} value={designation}>{designation}</option>)}
+                    </select>
+                  </label>}
                 </>}
                 {needsDetails && <>
-                  <label className="field-label">Department code<input name="department" required maxLength={6} pattern="[A-Za-z]{2,6}" placeholder="CSE" style={{ textTransform: 'uppercase' }} /></label>
-                  <label className="field-label">Year of joining<input name="joiningYear" type="number" required min="2000" max={new Date().getFullYear() + 1} defaultValue={new Date().getFullYear()} /></label>
+                  <label className="field-label">Department
+                    <select value={department} onChange={(event) => {
+                      const nextDepartment = event.target.value;
+                      setDepartment(nextDepartment);
+                      setSection(accountDepartments[nextDepartment]?.sections[0] || '');
+                    }} required>
+                      {!department && <option value="" disabled>Select the faculty department</option>}
+                      {(Array.isArray(departmentOptions) ? departmentOptions : Object.keys(departmentOptions)).map((code) => (
+                        <option key={code} value={code}>{code}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="field-label">Year of joining
+                    <select name="joiningYear" defaultValue={new Date().getFullYear()} required>
+                      {joiningYears.map((year) => <option key={year} value={year}>{year}</option>)}
+                    </select>
+                  </label>
+                </>}
+                {kind === 'student' && <>
+                  <label className="field-label">Section
+                    <select name="section" value={section} onChange={(event) => setSection(event.target.value)} required>
+                      {departmentSections.map((code) => <option key={code} value={code}>Section {code}</option>)}
+                    </select>
+                    <small>The next class roll number is assigned automatically within the selected section.</small>
+                  </label>
+                  <p className="modal-intro">Student numbers use Bangalore campus (BL) and the four-year undergraduate code (U4).</p>
                 </>}
                 <button className="button button-primary" type="submit" disabled={busy}><Plus size={15} /> {busy ? 'Creating…' : `Create ${kind === 'college_admin' ? `${adminTypeNames[adminType]} admin` : kind === 'student' ? 'student' : 'faculty'} account`}</button>
               </form>
@@ -1463,8 +2519,9 @@ function IctsDashboard({ onLogout, theme, onToggleTheme }) {
               </div>
               {visible.map((person) => <article className="member-row" key={person._id}>
                 <span className="application-avatar">{initials(person.name)}</span>
-                <span className="member-person"><strong>{person.name}</strong><small>{person.email}</small></span>
+                <span className="member-person"><strong>{person.name}</strong><small>{person.email}</small><small>{person.department ? `${person.department}${person.joiningYear ? ` · joined ${person.joiningYear}` : ''}` : person.designation || roleNames[person.role]}</small>{person.identityType && <small>{person.identityType === 'faculty' ? 'Faculty' : 'Student'}{person.school ? ` · ${person.school}` : ''}</small>}</span>
                 <span className="status status-approved">{person.facultyId || person.registerNumber || (person.role === 'college_admin' ? profileTrackLabel(person, 'student-affairs') : roleNames[person.role])}</span>
+                <button className="button button-outline button-small" type="button" onClick={() => setEditingPerson(person)} aria-label={`Edit ${person.name}'s account`}><Pencil size={14} /> Edit</button>
                 <button className="button button-danger button-small" type="button" disabled={Boolean(deletingId)}
                   onClick={() => deleteAccount(person)} aria-label={`Delete ${person.name}'s account`}>
                   <Trash2 size={14} /> {deletingId === person._id ? 'Deleting…' : 'Delete'}
@@ -1475,6 +2532,11 @@ function IctsDashboard({ onLogout, theme, onToggleTheme }) {
           </>}
         </div>
       </main>
+      {editingPerson && <IctsEditAccountModal person={editingPerson} onClose={() => setEditingPerson(null)} onSaved={async () => {
+        await load();
+        setEditingPerson(null);
+        setNotice({ type: 'ok', text: 'Account details updated.' });
+      }} />}
     </div>
   );
 }
@@ -1483,13 +2545,11 @@ function pageDescription(page, role) {
   const descriptions = {
     clubs: 'A little curiosity can lead to a really good thing.',
     events: 'Explore what is happening on campus and register from event details.',
-    applications: role === 'student' ? 'See where your applications are and what happens next.' : 'Make room for someone new in your community.',
+    applications: role === 'student' ? '' : 'Make room for someone new in your community.',
     members: 'Keep the people, roles, and good work connected.',
     chats: 'Stay close to your club community with member-only conversations.',
     equipment: 'Share the good stuff. Bring it back ready for next time.',
-    funding: 'A clear view of requests, budgets, and plans in motion.',
     reports: 'A thoughtful snapshot of the clubs and work in motion.',
-    eventReports: 'Follow the mentor and Student Affairs review for post-event reports.',
     announcements: 'The latest notes from clubs across your campus.',
     profile: 'Your campus details, contact number, photo and password.',
   };
@@ -1505,25 +2565,49 @@ function ReportStat({ label, value, tone }) {
 }
 
 function SectionHeading({ title, subtitle, action, onAction }) {
-  return <div className="section-heading"><div><h2>{title}</h2><p>{subtitle}</p></div>{action && <button className="text-link" onClick={onAction}>{action}<ArrowRight size={15} /></button>}</div>;
+  return <div className="section-heading"><div><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div>{action && <button className="text-link" onClick={onAction}>{action}<ArrowRight size={15} /></button>}</div>;
 }
 
-function EventRow({ event, index = 0, canReview, isPresident, onDetails, onReview, onResubmit }) {
+function WorkflowFilter({ value, onChange }) {
+  return <label className="workflow-filter">Show
+    <select value={value} onChange={(event) => onChange(event.target.value)}>
+      <option value="all">All statuses</option>
+      <option value="pending">Awaiting review</option>
+      <option value="approved">Approved</option>
+      <option value="rejected">Rejected</option>
+    </select>
+  </label>;
+}
+
+function ReviewHistory({ entries }) {
+  if (!entries?.length) return null;
+  return <details className="review-history">
+    <summary>Decision history ({entries.length})</summary>
+    <ol>{entries.map((entry, index) => <li key={`${entry.stage}-${index}`}>
+      <strong>{String(entry.status || '').replaceAll('_', ' ')}</strong>
+      <span>{entry.stage?.replaceAll('_', ' ')} · {entry.reviewer?.name || 'Former reviewer'} · {formatDate(entry.reviewedAt, { month: 'short', day: 'numeric', year: 'numeric' })}</span>
+      {entry.feedback && <small>{entry.feedback}</small>}
+    </li>)}</ol>
+  </details>;
+}
+
+function EventRow({ event, index = 0, canReview, needsReview, canResubmit, canEdit, onEdit, onDetails, onReview, onResubmit }) {
   const date = event.eventDate ? new Date(event.eventDate) : null;
   const eventDate = date && !Number.isNaN(date.getTime()) ? date : null;
   const count = event.registeredCount || 0;
-  return <article className="event-row">
+  return <article className={`event-row ${needsReview ? 'notification-needs-attention' : ''}`}>
     <button className={`event-poster event-poster-${index % 3}`} type="button" onClick={onDetails} aria-label={`View ${event.title} details`}>
       {event.posterUrl
         ? <img src={event.posterUrl} alt={`${event.title} event poster`} />
         : <span className="event-poster-fallback"><CalendarDays size={20} /><small>CAMPUS EVENT</small><strong>{event.title}</strong></span>}
       <span className="event-poster-date">{eventDate ? eventDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : 'Date TBA'}</span>
     </button>
-    <div className="event-details"><div className="event-meta"><span>{event.clubId?.name || 'Campus club'}</span><span className={statusClass(event.status)}>{event.status.replaceAll('_', ' ')}</span></div><h3>{event.title}</h3><p><CalendarDays size={13} /> {formatDate(event.eventDate, { weekday: 'short', month: 'short', day: 'numeric' })}{event.venueId?.name && <> <span>·</span> {event.venueId.name}</>}</p>{event.rejectionFeedback && <small className="rejection-feedback">Feedback: {event.rejectionFeedback}</small>}</div>
+    <div className="event-details"><div className="event-meta"><span>{event.clubId?.name || 'Campus club'}</span><span className={statusClass(event.status)}>{event.status.replaceAll('_', ' ')}</span>{needsReview && <span className="notification-inline-label">NEEDS YOUR REVIEW</span>}</div><h3>{event.title}</h3><p><CalendarDays size={13} /> {formatDate(event.eventDate, { weekday: 'short', month: 'short', day: 'numeric' })}{event.venueId?.name && <> <span>·</span> {event.venueId.name}</>}</p>{event.coHostIds?.length > 0 && <small className="event-cohosts">Co-hosted with {event.coHostIds.map((host) => host.name).join(', ')}</small>}{event.createdBy?.name && <small>Proposed by {event.createdBy.name}</small>}<ReviewHistory entries={reviewHistoryFor(event)} />{event.rejectionFeedback && <small className="rejection-feedback">Feedback: {event.rejectionFeedback}</small>}</div>
     <div className="event-row-action">
       <button className="text-link" type="button" onClick={onDetails}>View details <ArrowRight size={14} /></button>
+      {canEdit && <button className="button button-outline" type="button" onClick={onEdit}>Edit event</button>}
       {canReview && ['mentor_pending', 'student_affairs_pending'].includes(event.status) && <div className="review-actions"><button className="button button-outline" onClick={() => onReview('approved')}>Approve</button><button className="button button-quiet" onClick={() => onReview('rejected')}>Decline</button></div>}
-      {isPresident && ['draft', 'rejected'].includes(event.status) && <button className="button button-outline" onClick={onResubmit}>Submit for approval</button>}
+      {canResubmit && ['draft', 'rejected'].includes(event.status) && <button className="button button-outline" onClick={onResubmit}>Submit for approval</button>}
       {typeof event.capacity === 'number' && <small>{count}/{event.capacity} places</small>}
     </div>
   </article>;
@@ -1533,7 +2617,6 @@ function EventDetailsDialog({ event, events, registrations, onNavigate, onClose,
   const [confirmation, setConfirmation] = useState('');
   const [pendingEvent, setPendingEvent] = useState(null);
   const [slideDirection, setSlideDirection] = useState(0);
-  const isTransitioning = useRef(false);
   const transitionTimer = useRef(null);
   const carouselEvents = useMemo(
     () => events.some((item) => item._id === event._id) ? events : [event, ...events],
@@ -1550,8 +2633,6 @@ function EventDetailsDialog({ event, events, registrations, onNavigate, onClose,
   };
 
   const finishNavigation = useCallback((targetEvent) => {
-    if (!isTransitioning.current) return;
-    isTransitioning.current = false;
     window.clearTimeout(transitionTimer.current);
     transitionTimer.current = null;
     setPendingEvent(null);
@@ -1561,16 +2642,27 @@ function EventDetailsDialog({ event, events, registrations, onNavigate, onClose,
   }, [onNavigate]);
 
   const moveCarousel = useCallback((direction) => {
-    if (isTransitioning.current || carouselEvents.length < 2) return;
-    const nextIndex = (carouselIndex + direction + carouselEvents.length) % carouselEvents.length;
+    if (carouselEvents.length < 2) return;
+    const pendingIndex = pendingEvent
+      ? carouselEvents.findIndex((item) => item._id === pendingEvent._id)
+      : carouselIndex;
+    const currentIndex = pendingIndex >= 0 ? pendingIndex : carouselIndex;
+    const nextIndex = (currentIndex + direction + carouselEvents.length) % carouselEvents.length;
     const nextEvent = carouselEvents[nextIndex];
-    if (!nextEvent || nextEvent._id === event._id) return;
-    isTransitioning.current = true;
+    if (!nextEvent) return;
+    if (nextEvent._id === event._id) {
+      window.clearTimeout(transitionTimer.current);
+      transitionTimer.current = null;
+      setPendingEvent(null);
+      setSlideDirection(0);
+      return;
+    }
     setConfirmation('');
     setPendingEvent(nextEvent);
     setSlideDirection(direction);
+    window.clearTimeout(transitionTimer.current);
     transitionTimer.current = window.setTimeout(() => finishNavigation(nextEvent), 500);
-  }, [carouselEvents, carouselIndex, event._id, finishNavigation]);
+  }, [carouselEvents, carouselIndex, event._id, finishNavigation, pendingEvent]);
 
   useEffect(() => {
     const closeOnEscape = (keyboardEvent) => {
@@ -1605,9 +2697,9 @@ function EventDetailsDialog({ event, events, registrations, onNavigate, onClose,
           ? <img src={slideEvent.posterUrl} alt={`${slideEvent.title} event poster`} />
           : <span className="event-dialog-poster-fallback"><CalendarDays size={34} /><small>CAMPUS EVENT</small><strong>{slideEvent.title}</strong></span>}
         {hasMultipleEvents && <div className="event-dialog-carousel-controls" aria-label="Browse events">
-          <button className="icon-button" type="button" onClick={() => moveCarousel(-1)} disabled={isTransitioning.current} aria-label="Previous event"><ChevronLeft size={18} /></button>
+          <button className="icon-button" type="button" onClick={() => moveCarousel(-1)} aria-label="Previous event"><ChevronLeft size={18} /></button>
           <span>{slideIndex + 1} / {carouselEvents.length}</span>
-          <button className="icon-button" type="button" onClick={() => moveCarousel(1)} disabled={isTransitioning.current} aria-label="Next event"><ChevronRight size={18} /></button>
+          <button className="icon-button" type="button" onClick={() => moveCarousel(1)} aria-label="Next event"><ChevronRight size={18} /></button>
         </div>}
       </div>
       <div className="event-dialog-content">
@@ -1619,6 +2711,7 @@ function EventDetailsDialog({ event, events, registrations, onNavigate, onClose,
           {venue && <div><Compass size={17} /><span><strong>{venue.name || 'Venue'}</strong><small>{venue.location || 'Campus venue'}</small></span></div>}
           {typeof slideEvent.capacity === 'number' && <div><Users size={17} /><span><strong>{slideEvent.registeredCount || 0} of {slideEvent.capacity} seats reserved</strong><small>Campus community</small></span></div>}
         </div>
+        {slideEvent.coHostIds?.length > 0 && <p className="event-cohosts">Co-hosted with {slideEvent.coHostIds.map((host) => host.name).join(', ')}</p>}
         {slideEvent._id === event._id && confirmation && <div className="registration-confirm" role="group" aria-label="Confirm event registration">
           <strong>{confirmation === 'register' ? 'Do you want to register for this event?' : 'Do you want to cancel your registration?'}</strong>
           <div><button className="button button-primary" type="button" onClick={confirmAction}>Yes</button><button className="button button-outline" type="button" onClick={() => setConfirmation('')}>No</button></div>
@@ -1631,14 +2724,13 @@ function EventDetailsDialog({ event, events, registrations, onNavigate, onClose,
     </div>;
   };
 
-  const previousIndex = (carouselIndex - 1 + carouselEvents.length) % carouselEvents.length;
-  const nextIndex = (carouselIndex + 1) % carouselEvents.length;
-  const previousEvent = pendingEvent && slideDirection < 0 ? pendingEvent : event;
-  const nextEvent = pendingEvent && slideDirection > 0 ? pendingEvent : carouselEvents[nextIndex];
-  const firstSlide = slideDirection < 0 ? previousEvent : event;
-  const secondSlide = slideDirection < 0 ? event : nextEvent;
-  const firstIndex = slideDirection < 0 ? previousIndex : carouselIndex;
-  const secondIndex = slideDirection < 0 ? carouselIndex : nextIndex;
+  const pendingIndex = pendingEvent
+    ? carouselEvents.findIndex((item) => item._id === pendingEvent._id)
+    : -1;
+  const firstSlide = slideDirection < 0 ? pendingEvent : event;
+  const secondSlide = slideDirection < 0 ? event : pendingEvent;
+  const firstIndex = slideDirection < 0 ? pendingIndex : carouselIndex;
+  const secondIndex = slideDirection < 0 ? carouselIndex : pendingIndex;
 
   return <div className="event-dialog-backdrop" onMouseDown={(mouseEvent) => {
     if (mouseEvent.target === mouseEvent.currentTarget) onClose();
@@ -1718,61 +2810,113 @@ function AttendancePanel({ event, onError }) {
   </div>;
 }
 
-function EventReportComposer({ event, onSubmit }) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
+function EventReportFields({ initialDetails = {}, images = {}, onImageChange }) {
+  const groups = [
+    ['promotion', 'Promotion in social media'],
+    ['eventCategory', 'Event category'],
+    ['programType', 'Program type'],
+    ['programTheme', 'Program theme'],
+    ['sdgAlignment', 'Event alignment to SDG'],
+    ['sessionMode', 'Mode of session delivery'],
+    ['resourcePerson', 'Resource person / judge'],
+  ];
+  return <>
+    {groups.map(([field, label]) => (
+      <fieldset className="event-cohost-picker report-field-group" key={field}>
+        <legend>{label}</legend>
+        <div className="event-cohost-group">
+          {closureReportOptions[field].map((option) => <label key={option}>
+            <input type="checkbox" name={`report_${field}`} value={option} defaultChecked={initialDetails[field]?.selected?.includes(option)} />
+            {option}
+          </label>)}
+        </div>
+        <label className="field-label">Remarks / links<textarea name={`report_${field}_remark`} maxLength="3000" rows="2" defaultValue={initialDetails[field]?.remark || ''} placeholder="Add links, details, or remarks" /></label>
+      </fieldset>
+    ))}
+    <fieldset className="event-cohost-picker report-field-group">
+      <legend>Number of participants</legend>
+      <div className="event-cohost-group">
+        {['internal', 'external'].map((kind) => <label key={kind}>
+          <input type="checkbox" name="report_participants" value={kind} defaultChecked={initialDetails.participants?.selected?.includes(kind)} />
+          {kind === 'internal' ? 'Internal' : 'External'}
+        </label>)}
+      </div>
+      <div className="form-row">
+        <label className="field-label">Internal participants<input name="report_internalCount" type="number" min="0" step="1" defaultValue={initialDetails.participants?.internalCount ?? ''} /></label>
+        <label className="field-label">External participants<input name="report_externalCount" type="number" min="0" step="1" defaultValue={initialDetails.participants?.externalCount ?? ''} /></label>
+      </div>
+      <label className="field-label">Remarks<textarea name="report_participants_remark" maxLength="3000" rows="2" defaultValue={initialDetails.participants?.remark || ''} /></label>
+    </fieldset>
+    <h3 className="report-form-section-title">Activity Completion Report</h3>
+    {completionReportFields.map(([field, label, inputType]) => <div className="report-completion-field" key={field}>
+      <label className="field-label">{label}
+        {inputType === 'textarea'
+          ? <textarea name={`report_${field}`} maxLength={field === 'detailedReport' ? 20000 : 5000} rows={field === 'detailedReport' ? 8 : 3} defaultValue={initialDetails.activityCompletion?.[field]?.value || ''} />
+          : <input name={`report_${field}`} type={inputType} maxLength={inputType === 'text' ? 500 : undefined} defaultValue={initialDetails.activityCompletion?.[field]?.value || ''} />}
+      </label>
+      {field === 'detailedReport' && <small className="muted-copy">Maximum 1000 words.</small>}
+      <label className="field-label">Remarks<textarea name={`report_${field}_remark`} maxLength="3000" rows="2" defaultValue={initialDetails.activityCompletion?.[field]?.remark || ''} /></label>
+    </div>)}
+    {reportImageFields.map(([field, label]) => {
+      const preview = images[field] || initialDetails.activityCompletion?.[field]?.image || '';
+      return <div className="report-completion-field" key={field}>
+        <label className="field-label">{label} (image upload)<input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => onImageChange(event, field)} /></label>
+        {preview && <div className="media-preview media-preview-poster"><img src={preview} alt={`${label} preview`} /></div>}
+        <label className="field-label">Remarks<textarea name={`report_${field}_remark`} maxLength="3000" rows="2" defaultValue={initialDetails.activityCompletion?.[field]?.remark || ''} /></label>
+      </div>;
+    })}
+  </>;
+}
 
-  const submit = async (submitEvent) => {
-    submitEvent.preventDefault();
-    const form = submitEvent.currentTarget;
-    const values = Object.fromEntries(new FormData(form).entries());
-    values.budgetSpent = Number(values.budgetSpent || 0);
-    setBusy(true);
-    setError('');
-    try {
-      await api(`/events/${event._id}/report`, { method: 'POST', body: values });
-      form.reset();
-      await onSubmit();
-    } catch (submitError) {
-      setError(submitError.message);
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return <details className="report-composer">
-    <summary>Submit post-event report for {event.title}</summary>
-    <form className="modal-form" onSubmit={submit}>
-      <label className="field-label">Event summary<textarea name="summary" required maxLength={5000} rows="3" /></label>
-      <label className="field-label">Activities completed<textarea name="activities" required maxLength={5000} rows="3" /></label>
-      <label className="field-label">Outcomes<textarea name="outcomes" required maxLength={5000} rows="3" /></label>
-      <label className="field-label">Issues / learnings<textarea name="issues" maxLength={3000} rows="2" /></label>
-      <label className="field-label">Amount spent (INR)<input name="budgetSpent" type="number" min="0" step="1" defaultValue="0" /></label>
-      <p className="muted-copy">The OD attendance CSV is generated from the event’s attendance records when submitted.</p>
-      {error && <div className="notice notice-error" role="alert">{error}</div>}
-      <button className="button button-primary" type="submit" disabled={busy}>{busy ? 'Submitting…' : 'Send report for review'} <ArrowRight size={15} /></button>
-    </form>
+function EventReportSummary({ details }) {
+  if (!details) return null;
+  const attributeGroups = ['promotion', 'eventCategory', 'programType', 'programTheme', 'sdgAlignment', 'sessionMode', 'resourcePerson'];
+  const completion = details.activityCompletion || {};
+  return <details className="report-detail-view">
+    <summary>View completed report details</summary>
+    {attributeGroups.map((field) => {
+      const section = details[field] || {};
+      return <section key={field}>
+        <strong>{field.replaceAll(/([A-Z])/g, ' $1')}</strong>
+        <p>{section.selected?.join(', ') || 'No options selected'}</p>
+        {section.remark && <p><b>Remarks:</b> {section.remark}</p>}
+      </section>;
+    })}
+    <section><strong>Participants</strong>
+      <p>Internal: {details.participants?.internalCount || '—'} · External: {details.participants?.externalCount || '—'}</p>
+      {details.participants?.remark && <p><b>Remarks:</b> {details.participants.remark}</p>}
+    </section>
+    {completionReportFields.map(([field, label]) => completion[field]?.value || completion[field]?.remark
+      ? <section key={field}><strong>{label}</strong><p>{completion[field].value || '—'}</p>{completion[field].remark && <p><b>Remarks:</b> {completion[field].remark}</p>}</section>
+      : null)}
+    {reportImageFields.map(([field, label]) => completion[field]?.image || completion[field]?.remark
+      ? <section key={field}><strong>{label}</strong>{completion[field].image && <a href={completion[field].image} target="_blank" rel="noreferrer"><img className="report-upload-preview" src={completion[field].image} alt={label} /></a>}{completion[field].remark && <p><b>Remarks:</b> {completion[field].remark}</p>}</section>
+      : null)}
   </details>;
 }
 
 function BorrowApprovalRow({ borrow, canReview, onReview }) {
   return <article className="funding-row">
     <div className="funding-symbol"><Laptop size={17} /></div>
-    <div className="funding-details"><strong>{borrow.equipmentId?.name || 'Equipment request'} · {borrow.clubId?.name}</strong><span>Requested by {borrow.profileId?.name || 'club president'} · Due {formatDate(borrow.dueDate)}</span>{borrow.rejectionFeedback && <small className="rejection-feedback">Feedback: {borrow.rejectionFeedback}</small>}</div>
+    <div className="funding-details"><strong>{borrow.equipmentId?.name || 'Equipment request'} · {borrow.clubId?.name}</strong>{borrow.eventId?.title && <span>For {borrow.eventId.title}</span>}<span>Requested by {borrow.profileId?.name || 'club president'} · Due {formatDate(borrow.dueDate)}</span>{borrow.purpose && <span>Purpose: {borrow.purpose}</span>}<ReviewHistory entries={reviewHistoryFor(borrow)} />{borrow.rejectionFeedback && <small className="rejection-feedback">Feedback: {borrow.rejectionFeedback}</small>}</div>
     <div className="funding-actions"><span className={statusClass(borrow.status)}>{borrow.status.replaceAll('_', ' ')}</span>{canReview && <div className="review-actions"><button className="review-accept" onClick={() => onReview('approved')} aria-label="Approve equipment request"><Check size={15} /></button><button className="review-decline" onClick={() => onReview('rejected')} aria-label="Reject equipment request"><X size={15} /></button></div>}</div>
   </article>;
 }
 
-function ReportRow({ report, isPresident, canReview, onReview, onDownload, onResubmit, onError }) {
+function ReportRow({ report, canResubmit, canReview, onReview, onDownload, onResubmit, onError }) {
   const [editing, setEditing] = useState(false);
+  const [images, setImages] = useState({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const submitRevision = async (event) => {
     event.preventDefault();
     setBusy(true);
     setError('');
-    const values = Object.fromEntries(new FormData(event.currentTarget).entries());
-    values.budgetSpent = Number(values.budgetSpent || report.budgetSpent || 0);
+    const formData = new FormData(event.currentTarget);
+    const values = report.reportDetails
+      ? { reportDetails: buildReportDetails(formData, images, report.reportDetails) }
+      : Object.fromEntries(formData.entries());
+    if (!report.reportDetails) values.budgetSpent = Number(values.budgetSpent || report.budgetSpent || 0);
     try {
       await onResubmit(values);
       setEditing(false);
@@ -1783,32 +2927,52 @@ function ReportRow({ report, isPresident, canReview, onReview, onDownload, onRes
       setBusy(false);
     }
   };
+  const pickImage = async (event, field) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    try {
+      const image = await resizeImage(file, 1400, 'image/jpeg', false);
+      setImages((current) => ({ ...current, [field]: image }));
+      setError('');
+    } catch (imageError) {
+      setError(imageError.message);
+    }
+  };
 
-  return <article className="report-review-card">
-    <div className="application-title"><strong>{report.eventId?.title || 'Campus event'} · {report.clubId?.name}</strong><span className={statusClass(report.status)}>{report.status.replaceAll('_', ' ')}</span></div>
+  return <article className={`report-review-card ${canReview ? 'notification-needs-attention' : ''}`}>
+    <div className="application-title"><strong>{report.eventId?.title || 'Campus event'} · {report.clubId?.name}</strong><span className={statusClass(report.status)}>{report.status.replaceAll('_', ' ')}</span>{canReview && <span className="notification-inline-label">NEEDS YOUR REVIEW</span>}</div>
+    <small>Submitted by {report.submittedBy?.name || 'club representative'}</small>
     <p>{report.summary}</p><p><strong>Activities:</strong> {report.activities}</p><p><strong>Outcomes:</strong> {report.outcomes}</p>
     {report.issues && <p><strong>Issues / learnings:</strong> {report.issues}</p>}
+    <EventReportSummary details={report.reportDetails} />
     <small>{report.attendeeCount} attendees · {formatMoney(report.budgetSpent)} spent</small>
+    <ReviewHistory entries={reviewHistoryFor(report)} />
     {report.rejectionFeedback && <p className="rejection-feedback">Feedback: {report.rejectionFeedback}</p>}
     <div className="review-actions">
       <button className="button button-outline button-small" onClick={onDownload}><Download size={14} /> Download OD roster</button>
       {canReview && <><button className="button button-outline button-small" onClick={() => onReview('approved')}>Approve</button><button className="button button-quiet button-small" onClick={() => onReview('rejected')}>Reject</button></>}
-      {isPresident && report.status === 'rejected' && <button className="button button-outline button-small" onClick={() => setEditing(!editing)}>{editing ? 'Close edit' : 'Revise & resubmit'}</button>}
+      {canResubmit && report.status === 'rejected' && <button className="button button-outline button-small" onClick={() => setEditing(!editing)}>{editing ? 'Close edit' : 'Revise & resubmit'}</button>}
     </div>
     {editing && <form className="modal-form report-edit-form" onSubmit={submitRevision}>
-      <label className="field-label">Summary<textarea name="summary" defaultValue={report.summary} required maxLength={5000} rows="2" /></label>
-      <label className="field-label">Activities<textarea name="activities" defaultValue={report.activities} required maxLength={5000} rows="2" /></label>
-      <label className="field-label">Outcomes<textarea name="outcomes" defaultValue={report.outcomes} required maxLength={5000} rows="2" /></label>
-      <label className="field-label">Issues / learnings<textarea name="issues" defaultValue={report.issues} maxLength={3000} rows="2" /></label>
+      {report.reportDetails
+        ? <EventReportFields initialDetails={report.reportDetails} images={images} onImageChange={pickImage} />
+        : <>
+          <label className="field-label">Summary<textarea name="summary" defaultValue={report.summary} required maxLength={5000} rows="2" /></label>
+          <label className="field-label">Activities<textarea name="activities" defaultValue={report.activities} required maxLength={5000} rows="2" /></label>
+          <label className="field-label">Outcomes<textarea name="outcomes" defaultValue={report.outcomes} required maxLength={5000} rows="2" /></label>
+          <label className="field-label">Issues / learnings<textarea name="issues" defaultValue={report.issues} maxLength={3000} rows="2" /></label>
+          <label className="field-label">Amount spent (INR)<input name="budgetSpent" type="number" min="0" step="1" defaultValue={report.budgetSpent || 0} /></label>
+        </>}
       {error && <div className="notice notice-error" role="alert">{error}</div>}
       <button className="button button-primary" type="submit" disabled={busy}>{busy ? 'Resubmitting…' : 'Send revised report'} <ArrowRight size={15} /></button>
     </form>}
   </article>;
 }
 
-function ClubCard({ club, index, application, isMember, onApply, isAdmin, onEdit }) {
+function ClubCard({ club, index, application, isMember, onApply, isAdmin, canApply, onEdit }) {
   const colors = ['club-lilac', 'club-peach', 'club-mint', 'club-blue'];
-  const icon = [Sparkles, Laptop, Users, Compass][index % 4];
+  const icon = [Compass, Laptop, Users][index % 3];
   const Icon = icon;
   return <article className="club-card">
     <div className={`club-art ${colors[index % colors.length]}`}>
@@ -1817,18 +2981,19 @@ function ClubCard({ club, index, application, isMember, onApply, isAdmin, onEdit
         : <><span className="club-art-orbit" /><span className="club-icon"><Icon size={22} /></span><span className="club-art-number">0{index + 1}</span></>}
     </div>
     <div className="club-card-body"><div className="club-category">{club.category || 'Campus community'}</div><h2>{club.name}</h2><p>{club.description || 'A welcoming place to meet, learn, and make things happen.'}</p>
-      <span className="club-coordinator">{club.clubType === 'technical' ? 'Technical club' : 'Non-technical club'}{club.mentor?.name ? ` · Mentor: ${club.mentor.name}` : ''}</span>
+      <span className="club-coordinator">{club.clubType === 'technical' ? 'Technical club' : 'Non-technical club'}{club.mentors?.length ? ` · Mentors: ${club.mentors.map((mentor) => mentor.name).join(', ')}` : club.mentorDirectory?.length ? ` · Mentors: ${club.mentorDirectory.map((mentor) => mentor.name).join(', ')}` : ''}</span>
       {isAdmin ? <button className="text-link club-join" onClick={onEdit}>Edit club details <ArrowRight size={15} /></button> :
         isMember ? <span className="club-applied status status-approved">You’re a member</span> :
           application?.status === 'pending' ? <span className={`club-applied ${statusClass(application.status)}`}>Application pending</span> :
-                club.recruitmentOpen ? <button className="text-link club-join" onClick={onApply}>{application?.status === 'rejected' ? 'Apply again' : application?.status === 'approved' ? 'Join again' : 'I’m interested'} <ArrowRight size={15} /></button>
-                : <span className="club-manager-note">Recruitment is currently closed.</span>}
+                canApply && club.recruitmentOpen ? <button className="text-link club-join" onClick={onApply}>{application?.status === 'rejected' ? 'Apply again' : application?.status === 'approved' ? 'Join again' : 'I’m interested'} <ArrowRight size={15} /></button>
+                : !canApply ? <span className="club-manager-note">{club.recruitmentOpen ? 'Club details · membership applications are for students' : 'Recruitment is currently closed.'}</span>
+                  : <span className="club-manager-note">Recruitment is currently closed.</span>}
     </div>
   </article>;
 }
 
 function ApplicationRow({ application, isOwn, canReview, onReview }) {
-  return <article className="application-row"><div className="application-avatar">{initials(application.profileId?.name)}</div><div className="application-details"><div className="application-title"><strong>{application.clubId?.name || 'Club application'}</strong><span className={statusClass(application.status)}>{application.status}</span></div><p>{isOwn ? 'Your application' : `${application.profileId?.name || 'A student'}${application.profileId?.email ? ` · ${application.profileId.email}` : ''}`}</p><small>Applying for: {application.requestedPosition === 'executive' ? 'Executive consideration' : 'Club membership'}</small>
+  return <article className={`application-row ${canReview && application.status === 'pending' ? 'notification-needs-attention' : ''}`}><div className="application-avatar">{initials(application.profileId?.name)}</div><div className="application-details"><div className="application-title"><strong>{application.clubId?.name || 'Club application'}</strong><span className={statusClass(application.status)}>{application.status}</span>{canReview && application.status === 'pending' && <span className="notification-inline-label">NEW APPLICATION</span>}</div><p>{isOwn ? 'Your application' : `${application.profileId?.name || 'A student'}${application.profileId?.email ? ` · ${application.profileId.email}` : ''}`}</p><small>Applying for: {application.requestedPosition === 'executive' ? 'Executive consideration' : 'Club membership'}</small>
     <details className="applicant-details" open={canReview && application.status === 'pending'}><summary>Applicant details</summary><dl>
       <div><dt>Name</dt><dd>{application.profileId?.name || 'Not provided'}</dd></div>
       <div><dt>Roll number</dt><dd>{application.profileId?.registerNumber || 'Not provided'}</dd></div>
@@ -1838,18 +3003,18 @@ function ApplicationRow({ application, isOwn, canReview, onReview }) {
       <div><dt>Domain</dt><dd>{application.domain || 'General'}</dd></div>
       <div className="applicant-reason"><dt>Reason for joining</dt><dd>{application.reason || 'Not provided'}</dd></div>
     </dl></details>
-    {application.rejectionFeedback && <small className="rejection-feedback">Feedback: {application.rejectionFeedback}</small>}<time>{formatDate(application.appliedDate)}</time></div>
+    <ReviewHistory entries={reviewHistoryFor(application)} />{application.rejectionFeedback && <small className="rejection-feedback">Feedback: {application.rejectionFeedback}</small>}<time>{formatDate(application.appliedDate)}</time></div>
     {canReview && application.status === 'pending' && <div className="review-actions"><button className="review-accept" onClick={() => onReview('approved')} aria-label="Approve application"><Check size={16} /></button><button className="review-decline" onClick={() => onReview('rejected')} aria-label="Decline application"><X size={16} /></button></div>}
   </article>;
 }
 
 function PositionInvitation({ membership, onRespond }) {
   const club = membership.clubId?.name || 'a campus club';
-  const title = membership.positionTitle || membership.position.replaceAll('_', ' ');
-  return <article className="application-row position-invitation">
+  const title = membership.position.replaceAll('_', ' ');
+  return <article className="application-row position-invitation notification-needs-attention">
     <div className="application-avatar"><ShieldCheck size={16} /></div>
     <div className="application-details">
-      <div className="application-title"><strong>Office-bearer invitation · {club}</strong><span className={statusClass('pending')}>awaiting your response</span></div>
+      <div className="application-title"><strong>Office-bearer invitation · {club}</strong><span className={statusClass('pending')}>awaiting your response</span><span className="notification-inline-label">RESPONSE NEEDED</span></div>
       <p>You have been nominated as {title}. Accept to activate this club role.</p>
     </div>
     <div className="review-actions"><button className="review-accept" onClick={() => onRespond('accepted')} aria-label="Accept office-bearer invitation"><Check size={16} /></button><button className="review-decline" onClick={() => onRespond('declined')} aria-label="Decline office-bearer invitation"><X size={16} /></button></div>
@@ -1857,29 +3022,27 @@ function PositionInvitation({ membership, onRespond }) {
 }
 
 function MemberRow({ member, canEdit, canRemove, onRemove, onRoleChange }) {
-  const [positionTitle, setPositionTitle] = useState(member.positionTitle || '');
   const [officeBearerGroup, setOfficeBearerGroup] = useState(member.officeBearerGroup);
+  const isEnded = member.membershipStatus === 'ended';
   const isOfficeBearer = ['office_bearer', 'president', 'vice_president', 'treasurer', 'secretary'].includes(member.position)
     || (member.position === 'executive' && member.officeBearerGroup);
-  useEffect(() => { setPositionTitle(member.positionTitle || ''); }, [member.positionTitle]);
   useEffect(() => { setOfficeBearerGroup(member.officeBearerGroup); }, [member.officeBearerGroup]);
   return <article className="member-row">
     <span className="application-avatar">{initials(member.profileId?.name)}</span>
     <span className="member-person"><strong>{member.profileId?.name || 'Campus member'}</strong><small>{member.profileId?.email}</small></span>
-    <span className="member-date">Joined {formatDate(member.joinedDate, { month: 'short', day: 'numeric', year: 'numeric' })}</span>
+    <span className="member-date">{isEnded ? `Ended ${formatDate(member.endedAt, { month: 'short', day: 'numeric', year: 'numeric' })}` : `Joined ${formatDate(member.joinedDate, { month: 'short', day: 'numeric', year: 'numeric' })}`}</span>
+    {isEnded && <span className={statusClass('ended')}>Membership ended</span>}
     {member.membershipStatus === 'pending' && <span className={statusClass('pending')}>Invitation pending</span>}
-    <select aria-label={`Position for ${member.profileId?.name || 'member'}`} value={member.position} disabled={!canEdit} onChange={(event) => onRoleChange(event.target.value, positionTitle, false)}>
+    <select aria-label={`Position for ${member.profileId?.name || 'member'}`} value={member.position} disabled={!canEdit} onChange={(event) => onRoleChange(event.target.value, false)}>
       <option value="member">Member</option><option value="executive">Executive</option>
       {isOfficeBearer && <><option value="office_bearer">Office bearer</option><option value="president">President</option><option value="vice_president">Vice president</option><option value="treasurer">Treasurer</option><option value="secretary">Secretary</option></>}
     </select>
-    <input aria-label={`Custom position title for ${member.profileId?.name || 'member'}`} className="member-title-input" value={positionTitle} disabled={!canEdit} maxLength={80} placeholder="Custom title" onChange={(event) => setPositionTitle(event.target.value)} onBlur={() => {
-      if (positionTitle !== (member.positionTitle || '')) onRoleChange(member.position, positionTitle, officeBearerGroup);
-    }} />
     {member.position === 'executive' && isOfficeBearer && <label className="member-ob-toggle"><input type="checkbox" checked={Boolean(officeBearerGroup)} disabled={!canEdit} onChange={(event) => {
       setOfficeBearerGroup(event.target.checked);
-      onRoleChange(member.position, positionTitle, event.target.checked);
+      onRoleChange(member.position, event.target.checked);
     }} /> OB</label>}
-    {canRemove && <button className="button button-quiet button-small member-remove" type="button" onClick={onRemove}>Remove</button>}
+    {isEnded && <small className="member-end-note">Ended by {member.endedBy?.name || 'club leadership'}</small>}
+    {canRemove && !isEnded && <button className="button button-quiet button-small member-remove" type="button" onClick={onRemove}>Remove</button>}
   </article>;
 }
 
@@ -1888,16 +3051,37 @@ function ParticipationRow({ record }) {
 }
 
 function EquipmentCard({ equipment, index, isPresident, activeBorrow, onBorrow, onReturn }) {
-  return <article className="surface-card equipment-card"><div className={`equipment-art equipment-art-${index % 3}`}><Laptop size={25} /><span className="equipment-condition">{equipment.condition || 'good'} condition</span></div><div className="equipment-card-body"><span className="club-category">{equipment.clubId?.name || 'Club equipment'}</span><h2>{equipment.name}</h2><p>{equipment.description || 'Shared by your campus community.'}</p><div className="equipment-card-bottom"><span className={equipment.availableQuantity ? 'availability' : 'unavailable'}><i />{equipment.availableQuantity} of {equipment.totalQuantity} available</span>{activeBorrow && ['borrowed', 'overdue'].includes(activeBorrow.status) && <button className="button button-outline button-small" onClick={onReturn}>Return item</button>}{isPresident && (!activeBorrow || ['returned', 'rejected'].includes(activeBorrow.status)) && <button className="button button-outline button-small" disabled={!equipment.availableQuantity} onClick={onBorrow}>Request borrow</button>}</div></div></article>;
+  return <article className="surface-card equipment-card"><div className={`equipment-art equipment-art-${index % 3}`}><Laptop size={25} /><span className="equipment-condition">{equipment.condition || 'good'} condition</span></div><div className="equipment-card-body"><span className="club-category">{equipment.clubId?.name || 'Club equipment'}</span><h2>{equipment.name}</h2><p>{equipment.description || 'Shared by your campus community.'}</p><div className="equipment-card-bottom"><span className={equipment.availableQuantity ? 'availability' : 'unavailable'}><i />{equipment.availableQuantity} of {equipment.totalQuantity} available</span>{activeBorrow && ['borrowed', 'overdue'].includes(activeBorrow.status) && <button className="button button-outline button-small" onClick={onReturn}>Return item</button>}{isPresident && (!activeBorrow || ['returned', 'rejected'].includes(activeBorrow.status)) && <button className="button button-outline button-small" disabled={!equipment.availableQuantity} onClick={onBorrow}>Request equipment</button>}</div></div></article>;
 }
 
 function FundingRow({ request, canReview, onReview }) {
-  return <article className="funding-row"><div className="funding-symbol"><ArrowDownLeft size={17} /></div><div className="funding-details"><strong>{request.clubId?.name || 'Club funding'}</strong><span>{request.purpose}</span><small>{formatDate(request.requestDate)}</small>{request.rejectionFeedback && <small className="rejection-feedback">Feedback: {request.rejectionFeedback}</small>}</div><div className="funding-actions"><strong>{formatMoney(request.requestedAmount)}</strong><span className={statusClass(request.status)}>{request.status}</span>{canReview && request.status === 'pending' && <div className="review-actions"><button className="review-accept" onClick={() => onReview('approved')} aria-label="Approve funding request"><Check size={15} /></button><button className="review-decline" onClick={() => onReview('rejected')} aria-label="Decline funding request"><X size={15} /></button></div>}</div></article>;
+  return <article className={`funding-row ${canReview ? 'notification-needs-attention' : ''}`}><div className="funding-details"><strong>{request.clubId?.name || 'Club funding'}</strong>{request.eventId?.title && <span>For {request.eventId.title}</span>}<small>Applied {formatDate(request.requestDate)}{request.createdBy?.name ? ` · Requested by ${request.createdBy.name}` : ''}</small><span>{request.purpose}</span>{canReview && <small className="notification-inline-label">NEEDS YOUR REVIEW</small>}<ReviewHistory entries={reviewHistoryFor(request)} />{request.rejectionFeedback && <small className="rejection-feedback">Feedback: {request.rejectionFeedback}</small>}</div><div className="funding-actions"><strong>{formatMoney(request.requestedAmount)}</strong><span className={statusClass(request.status)}>{String(request.status).replaceAll('_', ' ')}</span>{canReview && <div className="review-actions"><button className="review-accept" onClick={() => onReview('approved')} aria-label={request.status === 'student_affairs_pending' ? 'Approve funding request as Student Affairs' : 'Approve funding request as mentor'}><Check size={15} /></button><button className="review-decline" onClick={() => onReview('rejected')} aria-label="Decline funding request"><X size={15} /></button></div>}</div></article>;
 }
 
-function TransactionRow({ transaction }) {
-  const isCredit = transaction.type === 'credit';
-  return <article className="transaction-row"><span className={`transaction-icon ${isCredit ? 'transaction-credit' : ''}`}>{isCredit ? <ArrowDownLeft size={15} /> : <ArrowUpRight size={15} />}</span><span className="transaction-meta"><strong>{transaction.clubId?.name || 'Club ledger'}</strong><small>{transaction.description} · {formatDate(transaction.transactionDate)}</small></span><strong className={isCredit ? 'transaction-amount-credit' : ''}>{isCredit ? '+' : '−'}{formatMoney(transaction.amount)}</strong></article>;
+function SpendingChart({ transactions }) {
+  const spending = transactions
+    .filter((transaction) => transaction.type === 'debit')
+    .reduce((totals, transaction) => {
+      const clubName = transaction.clubId?.name || 'Club';
+      const description = transaction.description || 'Other spending';
+      const key = `${clubName}::${description}`;
+      const current = totals.get(key) || { clubName, description, amount: 0 };
+      current.amount += Number(transaction.amount) || 0;
+      totals.set(key, current);
+      return totals;
+    }, new Map());
+  const rows = [...spending.values()].sort((first, second) => second.amount - first.amount).slice(0, 6);
+  const maximum = rows[0]?.amount || 0;
+
+  return <section className="spending-chart" aria-label="Recorded club spending">
+    <SectionHeading title="Where funds are spent" subtitle="Recorded expenses by club and purpose." />
+    {rows.length ? rows.map((row) => (
+      <div className="spending-chart-row" key={`${row.clubName}::${row.description}`}>
+        <div className="spending-chart-label"><span><strong>{row.description}</strong><small>{row.clubName}</small></span><b>{formatMoney(row.amount)}</b></div>
+        <div className="spending-chart-track"><i style={{ width: `${Math.max(row.amount / maximum * 100, 2)}%` }} /></div>
+      </div>
+    )) : <p className="spending-chart-empty">No expenses have been recorded yet.</p>}
+  </section>;
 }
 
 function AnnouncementRow({ note }) {
@@ -1905,7 +3089,7 @@ function AnnouncementRow({ note }) {
 }
 
 function EmptyState({ title, text }) {
-  return <div className="empty-state"><span className="empty-icon"><Sparkles size={20} /></span><strong>{title}</strong><p>{text}</p></div>;
+  return <div className="empty-state"><strong>{title}</strong><p>{text}</p></div>;
 }
 
 export default function App() {
@@ -1953,7 +3137,14 @@ export default function App() {
     api('/profiles/me').then((currentProfile) => {
       if (active) setProfile(currentProfile);
     }).catch((error) => {
-      if (active) setProfileError(error.message);
+      if (!active) return;
+      if (error.status === 401) {
+        setSession(null);
+        setProfile(null);
+        setProfileError('');
+        return;
+      }
+      setProfileError(error.message);
     });
     return () => { active = false; };
   }, [userId]);
@@ -1971,7 +3162,7 @@ export default function App() {
 
   if (session === undefined) return <div className="app-loading"><span className="loading-orbit" /><p>Getting your campus ready…</p></div>;
   if (profileError) {
-    return <div className="profile-error"><div className="config-card"><span className="brand-mark"><Sparkles size={19} /></span><span className="eyebrow">A CONNECTION ISSUE</span><h1>One more moment.</h1><p>{profileError}</p><button className="button button-primary" onClick={() => window.location.reload()}>Try again <ArrowRight size={16} /></button><button className="text-link" onClick={logout}>Sign out</button></div></div>;
+    return <div className="profile-error"><div className="config-card"><span className="eyebrow">A CONNECTION ISSUE</span><h1>One more moment.</h1><p>{profileError}</p><button className="button button-primary" onClick={() => window.location.reload()}>Try again <ArrowRight size={16} /></button><button className="text-link" onClick={logout}>Sign out</button></div></div>;
   }
   if (!session) return <AuthScreen onAuthenticated={setSession} theme={theme} onToggleTheme={toggleTheme} />;
   if (!profile) return <div className="app-loading"><span className="loading-orbit" /><p>Setting up your space…</p></div>;

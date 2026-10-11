@@ -114,6 +114,16 @@ def migrate_legacy_data(database, icts_email: str) -> None:
     )
     database["clubmessages"].create_index([("clubId", ASCENDING), ("group", ASCENDING), ("createdAt", -1)])
     database["auth_sessions"].create_index("expiresAt", expireAfterSeconds=0)
+    database["clubcredentials"].create_index("clubId", unique=True)
+    database["clubcredentials"].create_index(
+        "email",
+        unique=True,
+        partialFilterExpression={"email": {"$type": "string"}},
+    )
+    database["clubloginchallenges"].create_index("tokenHash", unique=True)
+    database["clubloginchallenges"].create_index("expiresAt", expireAfterSeconds=0)
+    database["notifications"].create_index([("recipientId", ASCENDING), ("createdAt", -1)])
+    database["clubcredentialchangerequests"].create_index([("status", ASCENDING), ("createdAt", -1)])
 
 
 def serialize(value):

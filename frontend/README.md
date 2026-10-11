@@ -1,6 +1,6 @@
-# my AMRITA frontend
+# Amrita Sangam frontend
 
-The my AMRITA frontend is a React 18 application built with Vite. Supabase Auth handles email/password sessions; the FastAPI backend validates the session and serves campus data.
+The Amrita Sangam frontend is a React 18 application built with Vite. Supabase Auth handles email/password sessions; the FastAPI backend validates the session and serves campus data.
 
 Copy `.env.example` to `.env`, add the Supabase project URL and anon key, and run:
 

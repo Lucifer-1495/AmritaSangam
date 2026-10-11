@@ -11,6 +11,7 @@ from pymongo import ReturnDocument
 from .config import settings
 from .database import serialize_document
 from .models import Role
+from .services.common import profile_identity_fields
 
 
 logger = logging.getLogger(__name__)
@@ -52,16 +53,40 @@ def clear_auth_cookies(response: Response):
         )
 
 
-def create_mongo_session(database, profile: dict, response: Response) -> None:
+def create_mongo_session(database, profile: dict, response: Response, verified_club_id=None) -> None:
     token = secrets.token_urlsafe(32)
-    database["auth_sessions"].insert_one({
+    session = {
         "tokenHash": hashlib.sha256(token.encode("utf-8")).hexdigest(),
         "profileId": ObjectId(profile["_id"]),
         "supabaseId": profile["supabaseId"],
         "createdAt": datetime.now(timezone.utc),
         "expiresAt": datetime.now(timezone.utc) + timedelta(seconds=SESSION_MAX_AGE),
+    }
+    if verified_club_id is not None:
+        session["verifiedClubId"] = ObjectId(verified_club_id)
+    database["auth_sessions"].insert_one(session)
+    set_auth_cookie(response, token)
+
+
+def create_club_session(database, club_id, response: Response) -> None:
+    token = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+    database["auth_sessions"].insert_one({
+        "tokenHash": hashlib.sha256(token.encode("utf-8")).hexdigest(),
+        "profileId": ObjectId(),
+        "principalType": "club_account",
+        "clubId": ObjectId(club_id),
+        "createdAt": now,
+        "expiresAt": now + timedelta(seconds=SESSION_MAX_AGE),
     })
     set_auth_cookie(response, token)
+
+
+def revoke_club_sessions(database, club_id) -> None:
+    database["auth_sessions"].delete_many({
+        "principalType": "club_account",
+        "clubId": ObjectId(club_id),
+    })
 
 
 def supabase_request(method: str, path: str, **kwargs):
@@ -110,7 +135,7 @@ def profile_for_auth_user(database, auth_user: dict):
     if profile is None:
         raise HTTPException(
             status_code=403,
-            detail="This account has not been issued by ICTS. Ask ICTS to create your my AMRITA account.",
+            detail="This account has not been issued by ICTS. Ask ICTS to create your Amrita Sangam account.",
         )
     if is_icts and profile.get("role") != Role.ICTS.value:
         profiles.update_one({"_id": profile["_id"]}, {"$set": {"role": Role.ICTS.value}})
@@ -133,6 +158,33 @@ def current_profile(request: Request, response: Response):
         clear_auth_cookies(response)
         raise HTTPException(status_code=401, detail="Your session has expired. Sign in again.")
 
+    if session.get("principalType") == "club_account":
+        club_id = session.get("clubId")
+        club = database["clubs"].find_one({"_id": club_id}, {"name": 1})
+        credential = database["clubcredentials"].find_one(
+            {"clubId": club_id},
+            {"email": 1, "supabaseId": 1, "passwordHash": 1},
+        )
+        if (
+            club is None
+            or credential is None
+            or not (credential.get("supabaseId") or credential.get("passwordHash"))
+        ):
+            database["auth_sessions"].delete_one({"_id": session["_id"]})
+            clear_auth_cookies(response)
+            raise HTTPException(status_code=401, detail="This club account is no longer active. Sign in again.")
+        profile = {
+            "_id": session["profileId"],
+            "supabaseId": f"club-account:{club_id}",
+            "name": f"{club.get('name', 'Club')} account",
+            "email": credential.get("email", ""),
+            "role": Role.COMMITTEE.value,
+            "isClubAccount": True,
+            "verifiedClubId": str(club_id),
+            "clubName": club.get("name", "Club"),
+        }
+        return serialize_document(profile)
+
     profile = database["profiles"].find_one({
         "_id": session["profileId"],
         "supabaseId": session["supabaseId"],
@@ -141,6 +193,11 @@ def current_profile(request: Request, response: Response):
         database["auth_sessions"].delete_one({"_id": session["_id"]})
         clear_auth_cookies(response)
         raise HTTPException(status_code=401, detail="This account is no longer active. Sign in again.")
+    profile.update(profile_identity_fields(profile))
+    profile["isClubAccount"] = False
+    profile["verifiedClubId"] = (
+        str(session["verifiedClubId"]) if session.get("verifiedClubId") else None
+    )
     return serialize_document(profile)
 
 

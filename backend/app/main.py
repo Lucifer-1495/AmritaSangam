@@ -10,6 +10,7 @@ from pymongo.errors import DuplicateKeyError, PyMongoError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from .config import settings
+from .campus_directory import ensure_campus_directory
 from .database import connect_database, migrate_legacy_data
 from .routes import auth, campus, clubs, events, profiles, public
 
@@ -25,6 +26,7 @@ async def lifespan(app: FastAPI):
     try:
         client, database = connect_database(settings.mongo_uri)
         migrate_legacy_data(database, settings.icts_email)
+        ensure_campus_directory(database)
     except Exception:
         logger.exception("MongoDB connection or legacy data migration failed.")
         raise
@@ -37,7 +39,7 @@ async def lifespan(app: FastAPI):
         client.close()
 
 
-app = FastAPI(title="my AMRITA API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(title="Amrita Sangam API", version="1.0.0", lifespan=lifespan)
 app.state.db = None
 app.state.mongo_client = None
 
@@ -107,7 +109,7 @@ async def unexpected_error_handler(request: Request, error: Exception):
 
 @app.get("/")
 def root():
-    return {"name": "my AMRITA API", "health": "/api/health"}
+    return {"name": "Amrita Sangam API", "health": "/api/health"}
 
 
 app.include_router(auth.router, prefix="/api")
