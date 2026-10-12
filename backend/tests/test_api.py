@@ -22,6 +22,7 @@ from app.services.common import (
     has_verified_club_access,
     hash_shared_password,
     is_executive,
+    mentor_review_started,
     mentor_approval_assignments,
     profile_identity_fields,
     remove_csv_rows_for_email,
@@ -607,7 +608,7 @@ def test_api_keeps_the_existing_route_contract():
         "/api/event-reports",
         "/api/reports/summary",
     } <= paths
-    assert sum(len(operations) for operations in routes.values()) == 75
+    assert sum(len(operations) for operations in routes.values()) == 77
     assert {
         "/api/auth/password-reset/request",
         "/api/auth/password-reset/confirm",
@@ -695,6 +696,90 @@ class FakeCollection:
         for record in matches:
             self.records.remove(record)
         return SimpleNamespace(deleted_count=len(matches))
+
+
+def test_event_registration_is_permanent_for_students():
+    event_id = ObjectId()
+    profile_id = ObjectId()
+    event = {
+        "_id": event_id,
+        "status": "approved",
+        "capacity": 5,
+        "registeredCount": 0,
+        "eventDate": datetime.now(timezone.utc) + timedelta(days=2),
+        "endDate": datetime.now(timezone.utc) + timedelta(days=2, hours=1),
+    }
+
+    class Events(FakeCollection):
+        def find_one_and_update(self, query, update, **kwargs):
+            current = self.find_one({"_id": query["_id"], "status": query["status"]})
+            if not current or current["registeredCount"] >= current["capacity"]:
+                return None
+            current["registeredCount"] += update["$inc"]["registeredCount"]
+            return current
+
+        def update_one(self, query, update):
+            current = self.find_one(query)
+            if current:
+                current["registeredCount"] += update["$inc"]["registeredCount"]
+            return SimpleNamespace(matched_count=bool(current), modified_count=bool(current))
+
+    database = {
+        "events": Events([event]),
+        "eventregistrations": FakeCollection(),
+    }
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(db=database)))
+    profile = {"_id": str(profile_id), "role": "student"}
+
+    result = event_routes.register_for_event(request, {"eventId": str(event_id)}, profile)
+    assert result["status"] == "registered"
+    assert event["registeredCount"] == 1
+    with pytest.raises(HTTPException) as duplicate:
+        event_routes.register_for_event(request, {"eventId": str(event_id)}, profile)
+    assert duplicate.value.status_code == 409
+    with pytest.raises(HTTPException) as cancelled:
+        event_routes.cancel_registration(request, result["_id"], profile)
+    assert cancelled.value.status_code == 409
+    assert event["registeredCount"] == 1
+    assert database["eventregistrations"].records[0]["status"] == "registered"
+
+
+def test_equipment_request_saves_quantity_and_requested_time_range():
+    club_id, equipment_id, profile_id, mentor_id = (ObjectId() for _ in range(4))
+    database = {
+        "clubs": FakeCollection([{"_id": club_id, "mentorIds": [mentor_id]}]),
+        "equipment": FakeCollection([{
+            "_id": equipment_id,
+            "clubId": club_id,
+            "availableQuantity": 4,
+        }]),
+        "clubmembers": FakeCollection(),
+        "equipmentborrows": FakeCollection(),
+    }
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(db=database)))
+    profile = {
+        "_id": str(profile_id),
+        "role": "club_committee",
+        "isClubAccount": True,
+        "verifiedClubId": str(club_id),
+    }
+    start = datetime.now(timezone.utc) + timedelta(days=1)
+    end = start + timedelta(hours=3)
+
+    result = campus_routes.request_borrow(request, {
+        "clubId": str(club_id),
+        "equipmentId": str(equipment_id),
+        "quantity": 2,
+        "startDate": start.isoformat(),
+        "endDate": end.isoformat(),
+        "purpose": "Workshop setup",
+    }, profile)
+
+    assert result["quantity"] == 2
+    assert result["purpose"] == "Workshop setup"
+    assert result["status"] == "mentor_pending"
+    assert result["startDate"] == start.isoformat()
+    assert result["endDate"] == end.isoformat()
 
 
 def test_cohosted_workflow_waits_for_every_assigned_mentor():
@@ -1848,6 +1933,166 @@ def test_only_the_host_club_account_can_take_or_update_attendance():
     assert update_error.value.status_code == 403
     updated = event_routes.update_attendance(request, str(attendance_id), {"status": "absent"}, club_account)
     assert updated["status"] == "absent"
+
+
+def test_mentor_review_started_detects_partial_review():
+    assert not mentor_review_started({"mentorApprovals": [{"status": "pending"}]})
+    assert mentor_review_started({"mentorApprovals": [{"status": "approved"}, {"status": "pending"}]})
+    assert mentor_review_started({"mentorReviewedBy": ObjectId()})
+
+
+def test_host_club_account_can_view_event_registrations():
+    club_id, event_id, participant_id = ObjectId(), ObjectId(), ObjectId()
+    database = {
+        "events": FakeCollection([{"_id": event_id, "clubId": club_id}]),
+        "clubs": FakeCollection([{"_id": club_id}]),
+        "clubmembers": FakeCollection(),
+        "eventregistrations": FakeCollection([{
+            "_id": ObjectId(),
+            "eventId": event_id,
+            "profileId": participant_id,
+            "status": "registered",
+        }]),
+        "profiles": FakeCollection([{
+            "_id": participant_id,
+            "name": "Registered Student",
+            "email": "student@example.edu",
+        }]),
+    }
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(db=database)))
+    club_account = {
+        "_id": str(ObjectId()),
+        "role": "club_committee",
+        "isClubAccount": True,
+        "verifiedClubId": str(club_id),
+    }
+
+    registrations = event_routes.list_registrations(request, str(event_id), club_account)
+
+    assert len(registrations) == 1
+    assert registrations[0]["profileId"]["name"] == "Registered Student"
+
+    other_club_account = {**club_account, "verifiedClubId": str(ObjectId())}
+    with pytest.raises(HTTPException) as error:
+        event_routes.list_registrations(request, str(event_id), other_club_account)
+    assert error.value.status_code == 403
+
+
+def test_club_account_can_download_its_event_attendance_roster():
+    club_id, event_id, report_id, participant_id = (ObjectId() for _ in range(4))
+    database = {
+        "clubs": FakeCollection([{"_id": club_id}]),
+        "eventreports": FakeCollection([{
+            "_id": report_id, "clubId": club_id, "eventId": event_id,
+            "rosterFileName": "campus-event-od-attendance.csv",
+        }]),
+        "events": FakeCollection([{"_id": event_id, "title": "Campus Event"}]),
+        "attendances": FakeCollection([{
+            "eventId": event_id, "profileId": participant_id, "status": "present",
+            "checkInTime": datetime(2026, 1, 1, tzinfo=timezone.utc),
+        }]),
+        "profiles": FakeCollection([{
+            "_id": participant_id, "name": "Registered Student", "registerNumber": "BL.SC.U4CSE25204",
+        }]),
+    }
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(db=database)))
+    club_account = {
+        "_id": str(ObjectId()), "role": "club_committee", "isClubAccount": True,
+        "verifiedClubId": str(club_id),
+    }
+
+    response = event_routes.download_roster(request, str(report_id), club_account)
+
+    assert response.status_code == 200
+    assert response.body.decode() == "Name,Roll number\r\nRegistered Student,BL.SC.U4CSE25204"
+
+    other_club_account = {**club_account, "verifiedClubId": str(ObjectId())}
+    with pytest.raises(HTTPException) as error:
+        event_routes.download_roster(request, str(report_id), other_club_account)
+    assert error.value.status_code == 403
+
+
+def test_club_account_can_edit_report_until_mentor_review_starts(monkeypatch):
+    club_id, event_id, report_id = ObjectId(), ObjectId(), ObjectId()
+    mentor_id = ObjectId()
+    reports = FakeCollection([{
+        "_id": report_id,
+        "clubId": club_id,
+        "eventId": event_id,
+        "status": "mentor_pending",
+        "summary": "Initial summary",
+        "mentorApprovals": [{"clubId": club_id, "mentorId": mentor_id, "status": "pending"}],
+    }])
+    database = {
+        "eventreports": reports,
+        "events": FakeCollection([{"_id": event_id, "title": "Campus Event"}]),
+        "clubs": FakeCollection([{"_id": club_id, "mentor": mentor_id}]),
+        "clubmembers": FakeCollection(),
+        "attendances": FakeCollection(),
+        "profiles": FakeCollection(),
+    }
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(db=database)))
+    club_account = {
+        "_id": str(ObjectId()), "role": "club_committee", "isClubAccount": True,
+        "verifiedClubId": str(club_id),
+    }
+    monkeypatch.setattr(reports, "replace_one", lambda query, record: None, raising=False)
+
+    updated = event_routes.resubmit_event_report(
+        request, str(report_id), {"summary": "Updated summary"}, club_account
+    )
+    assert updated["summary"] == "Updated summary"
+    assert updated["status"] == "mentor_pending"
+
+    reports.records[0]["mentorApprovals"][0]["status"] = "approved"
+    with pytest.raises(HTTPException) as error:
+        event_routes.resubmit_event_report(
+            request, str(report_id), {"summary": "Too late"}, club_account
+        )
+    assert error.value.status_code == 409
+
+
+def test_club_account_can_edit_funding_and_equipment_requests_before_mentor_review():
+    club_id, event_id, equipment_id = ObjectId(), ObjectId(), ObjectId()
+    funding_id, borrow_id = ObjectId(), ObjectId()
+    funding = FakeCollection([{
+        "_id": funding_id, "clubId": club_id, "status": "mentor_pending",
+        "requestedAmount": 100, "purpose": "Materials",
+        "mentorApprovals": [{"status": "pending"}],
+    }])
+    borrows = FakeCollection([{
+        "_id": borrow_id, "clubId": club_id, "eventId": event_id, "equipmentId": equipment_id,
+        "status": "mentor_pending", "purpose": "Workshop", "dueDate": datetime(2027, 1, 1, tzinfo=timezone.utc),
+        "mentorApprovals": [{"status": "pending"}],
+    }])
+    database = {"fundingrequests": funding, "equipmentborrows": borrows}
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(db=database)))
+    club_account = {
+        "_id": str(ObjectId()), "role": "club_committee", "isClubAccount": True,
+        "verifiedClubId": str(club_id),
+    }
+
+    edited_funding = campus_routes.edit_funding_request(
+        request, str(funding_id), {"requestedAmount": 250, "purpose": "Updated materials"}, club_account
+    )
+    assert edited_funding["requestedAmount"] == 250
+    assert edited_funding["purpose"] == "Updated materials"
+
+    edited_borrow = campus_routes.edit_borrow_request(
+        request, str(borrow_id), {"purpose": "Updated workshop", "dueDate": "2027-02-01T23:59:00+00:00"},
+        club_account,
+    )
+    assert edited_borrow["purpose"] == "Updated workshop"
+    assert edited_borrow["dueDate"].startswith("2027-02-01")
+
+    funding.records[0]["mentorApprovals"][0]["status"] = "approved"
+    borrows.records[0]["mentorApprovals"][0]["status"] = "approved"
+    with pytest.raises(HTTPException) as funding_error:
+        campus_routes.edit_funding_request(request, str(funding_id), {"purpose": "Too late"}, club_account)
+    assert funding_error.value.status_code == 409
+    with pytest.raises(HTTPException) as borrow_error:
+        campus_routes.edit_borrow_request(request, str(borrow_id), {"purpose": "Too late"}, club_account)
+    assert borrow_error.value.status_code == 409
 
 
 def test_funding_request_requires_both_review_stages_before_ledger_allocation():

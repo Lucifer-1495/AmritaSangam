@@ -72,6 +72,17 @@ def normalize_domains(value):
     return domains
 
 
+def normalize_motto(value):
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise HTTPException(status_code=400, detail="Club motto must be text.")
+    motto = value.strip()
+    if len(motto) > 180:
+        raise HTTPException(status_code=400, detail="Club motto must be 180 characters or fewer.")
+    return motto
+
+
 def validate_mentor_ids(db, values):
     if not isinstance(values, list):
         raise HTTPException(status_code=400, detail="Choose one or more faculty mentors.")
@@ -148,6 +159,7 @@ def create_club(request: Request, body: dict, profile=Depends(current_profile)):
     club_data = {
         "name": body["name"],
         "description": body["description"],
+        "motto": normalize_motto(body.get("motto")),
         "category": body.get("category") or "Community",
         "clubType": body["clubType"],
         "domains": normalize_domains(body.get("domains")),
@@ -354,11 +366,13 @@ def update_club(request: Request, identity: str, body: dict, profile=Depends(cur
     if profile["role"] != Role.ADMIN.value and not can_manage_club(db, identity, profile):
         raise HTTPException(status_code=403, detail="Only this club’s leadership or Student Affairs can edit it.")
     allowed = (
-        ["name", "description", "category", "clubType", "mentor", "mentorIds", "recruitmentOpen", "logoUrl", "domains"]
+        ["name", "description", "motto", "category", "clubType", "mentor", "mentorIds", "recruitmentOpen", "logoUrl", "domains"]
         if profile["role"] == Role.ADMIN.value
-        else ["name", "description", "category", "logoUrl"]
+        else ["name", "description", "motto", "category", "logoUrl"]
     )
     updates = {key: body[key] for key in allowed if key in body}
+    if "motto" in updates:
+        updates["motto"] = normalize_motto(updates["motto"])
     club_email = str(body.get("clubLoginEmail") or "").strip().lower()
     club_password = body.get("clubLoginPassword") or None
     if "mentorIds" in body or "mentor" in body:

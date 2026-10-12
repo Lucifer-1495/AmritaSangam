@@ -167,7 +167,12 @@ function hasPendingMentorApproval(record, profileId) {
   return isClubMentor(record.clubId, profileId);
 }
 
-function profileTrackLabel(profile, track, verifiedClubName) {
+function mentorReviewStarted(record) {
+  return Boolean(record.mentorReviewedBy)
+    || Boolean(record.mentorApprovals?.some((approval) => approval.status !== 'pending'));
+}
+
+function profileTrackLabel(profile, track, verifiedClubName, memberships = []) {
   if (profile.role === 'college_admin') {
     const adminLabel = profile.adminType === 'other_authority'
       ? profile.designation || adminTypeNames.other_authority
@@ -175,6 +180,22 @@ function profileTrackLabel(profile, track, verifiedClubName) {
     return `${adminLabel} admin`;
   }
   if (track === 'verified-office-bearer' && verifiedClubName) return `${verifiedClubName} account`;
+  if (profile.role === 'student' || profile.role === 'club_committee') {
+    const activeMemberships = memberships.filter((membership) => membership.membershipStatus === 'active');
+    const officeBearerTitles = [
+      ['president', 'President'],
+      ['vice_president', 'Vice president'],
+      ['treasurer', 'Treasurer'],
+      ['secretary', 'Secretary'],
+    ];
+    const highestPosition = officeBearerTitles.find(([position]) =>
+      activeMemberships.some((membership) => membership.position === position));
+    if (highestPosition) return highestPosition[1];
+    if (activeMemberships.some((membership) =>
+      membership.position === 'office_bearer'
+      || (membership.position === 'executive' && membership.officeBearerGroup))) return 'Office bearer';
+    return activeMemberships.length ? 'Member' : 'Student';
+  }
   return trackNames[track] || roleNames[profile.role] || profile.role;
 }
 
@@ -205,6 +226,11 @@ function formatDate(value, options = { month: 'short', day: 'numeric', year: 'nu
   if (!value) return 'Date to be announced';
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? 'Date to be announced' : date.toLocaleDateString(undefined, options);
+}
+
+function isUpcomingEvent(event, now = new Date()) {
+  const eventEnd = new Date(event.endDate || event.eventDate);
+  return !Number.isNaN(eventEnd.getTime()) && eventEnd >= now;
 }
 
 function toDateTimeInput(value) {
@@ -420,6 +446,7 @@ function AuthScreen({ onAuthenticated, theme, onToggleTheme }) {
 
         </div>
       </section>
+      <SiteFooter />
     </main>
   );
 }
@@ -458,7 +485,8 @@ function Modal({ type, clubs, allClubs, eventOrganizers, profiles, venues, event
   const requestEvents = events.filter((item) =>
     String(item.clubId?._id || item.clubId) === String(requestClubId)
     || item.coHostIds?.some((host) => String(host?._id || host) === String(requestClubId)));
-  const defaultDueDate = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+  const defaultStartTime = toDateTimeInput(new Date(Date.now() + 5 * 60 * 1000));
+  const defaultEndTime = toDateTimeInput(new Date(Date.now() + 7 * 86400000));
   const facultyMentors = profiles.filter((person) => person.role === 'faculty_coordinator');
   const filteredMentors = facultyMentors.filter((person) =>
     `${person.name} ${person.facultyId || ''} ${person.email || ''}`.toLowerCase().includes(mentorSearch.trim().toLowerCase()),
@@ -540,8 +568,11 @@ function Modal({ type, clubs, allClubs, eventOrganizers, profiles, venues, event
         if (!equipment) throw new Error('Choose an available piece of equipment.');
         values.equipmentId = equipment._id;
         values.clubId = equipment.clubId?._id || equipment.clubId;
-        values.eventId = requestEventId;
-        values.dueDate = new Date(`${values.dueDate}T23:59:00`).toISOString();
+        values.quantity = Number(values.quantity);
+        values.startDate = new Date(values.startDate).toISOString();
+        values.endDate = new Date(values.endDate).toISOString();
+        values.dueDate = values.endDate;
+        if (requestEventId) values.eventId = requestEventId;
       }
       if (type === 'funding') values.eventId = requestEventId;
       const submitValues = ['borrow', 'eventReport'].includes(type) ? values : { ...values, clubId, coHostIds };
@@ -616,6 +647,7 @@ function Modal({ type, clubs, allClubs, eventOrganizers, profiles, venues, event
           {isClubForm && <>
             <label className="field-label">Club name<input name="name" required maxLength={100} defaultValue={selectedClub?.name} placeholder="e.g. Design Society" /></label>
             <label className="field-label">Category<input name="category" defaultValue={selectedClub?.category} placeholder="Arts, technology, community…" /></label>
+            <label className="field-label">Club motto<input name="motto" maxLength={180} defaultValue={selectedClub?.motto || ''} /></label>
             <label className="field-label">Application domains<textarea name="domains" required maxLength={1200} rows="3" defaultValue={selectedClub?.domains?.join('\n') || 'General'} placeholder={'For example:\nWeb development\nDesign\nEvents'} /><small>Enter one domain per line. Students choose from these when applying.</small></label>
             <label className="field-label">About the club<textarea name="description" required maxLength={2000} rows="3" defaultValue={selectedClub?.description} placeholder="What brings your community together?" /></label>
             <label className="field-label">Club logo (PNG, optional)<input type="file" accept="image/png" onChange={(event) => pickImage(event, 'logo')} /></label>
@@ -766,9 +798,13 @@ function Modal({ type, clubs, allClubs, eventOrganizers, profiles, venues, event
           </>}
           {type === 'borrow' && <>
             <label className="field-label">Equipment<select value={borrowEquipmentId} onChange={(event) => { setBorrowEquipmentId(event.target.value); setRequestEventId(''); }} required><option value="" disabled>Select equipment</option>{equipmentItems.map((item) => <option key={item._id} value={item._id}>{item.name} · {item.clubId?.name || 'Club'} ({item.availableQuantity} available)</option>)}</select></label>
-            <label className="field-label">Related event<select value={requestEventId} onChange={(event) => setRequestEventId(event.target.value)} required><option value="" disabled>Select this club’s event</option>{requestEvents.map((item) => <option key={item._id} value={item._id}>{item.title} · {formatDate(item.eventDate)}</option>)}</select></label>
-            <label className="field-label">Requested return date<input name="dueDate" type="date" min={new Date().toISOString().slice(0, 10)} defaultValue={defaultDueDate} required /></label>
-            <label className="field-label">Purpose<textarea name="purpose" maxLength="1000" rows="3" placeholder="What will the equipment be used for?" /></label>
+            <label className="field-label">Quantity<input name="quantity" type="number" min="1" max={equipmentItems.find((item) => item._id === borrowEquipmentId)?.availableQuantity || 1} step="1" defaultValue="1" required /></label>
+            <div className="form-row">
+              <label className="field-label">Needed from<input name="startDate" type="datetime-local" min={defaultStartTime} defaultValue={defaultStartTime} required /></label>
+              <label className="field-label">Needed until<input name="endDate" type="datetime-local" min={defaultStartTime} defaultValue={defaultEndTime} required /></label>
+            </div>
+            {requestEvents.length > 0 && <label className="field-label">Related event (optional)<select value={requestEventId} onChange={(event) => setRequestEventId(event.target.value)}><option value="">No event selected</option>{requestEvents.map((item) => <option key={item._id} value={item._id}>{item.title} · {formatDate(item.eventDate)}</option>)}</select></label>}
+            <label className="field-label">Reason for request<textarea name="purpose" maxLength="1000" rows="3" placeholder="Explain how the equipment will be used." required /></label>
             <p className="muted-copy">Your faculty mentor reviews this request first, followed by Student Affairs.</p>
           </>}
           {type === 'eventReport' && <>
@@ -856,7 +892,6 @@ function OverviewEventCarousel({ events, onOpen }) {
   const [activeIndex, setActiveIndex] = useState(0);
   const [pendingIndex, setPendingIndex] = useState(null);
   const [direction, setDirection] = useState(1);
-  const [paused, setPaused] = useState(false);
   const transitionTimer = useRef(null);
   const safeIndex = events.length ? activeIndex % events.length : 0;
   const activeEvent = events[safeIndex];
@@ -884,12 +919,6 @@ function OverviewEventCarousel({ events, onOpen }) {
     window.clearTimeout(transitionTimer.current);
     transitionTimer.current = window.setTimeout(() => finishTransition(normalizedIndex), 650);
   }, [events.length, finishTransition, pendingIndex, safeIndex]);
-
-  useEffect(() => {
-    if (events.length < 2 || paused || pendingIndex !== null) return undefined;
-    const timer = window.setTimeout(() => moveTo(safeIndex + 1), 5000);
-    return () => window.clearTimeout(timer);
-  }, [events.length, moveTo, paused, pendingIndex, safeIndex]);
 
   useEffect(() => () => window.clearTimeout(transitionTimer.current), []);
 
@@ -945,12 +974,6 @@ function OverviewEventCarousel({ events, onOpen }) {
   return <section
     className="overview-event-carousel"
     aria-label="Upcoming campus events"
-    onMouseEnter={() => setPaused(true)}
-    onMouseLeave={() => setPaused(false)}
-    onFocus={() => setPaused(true)}
-    onBlur={(focusEvent) => {
-      if (!focusEvent.currentTarget.contains(focusEvent.relatedTarget)) setPaused(false);
-    }}
   >
     <div
       className={`overview-event-track ${pendingIndex !== null ? `overview-event-track-${direction > 0 ? 'next' : 'previous'}` : 'overview-event-track-idle'}`}
@@ -1014,6 +1037,14 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
     () => navigationFor(track).filter((item) => item.id !== 'credentialRequests' || isStudentAffairs),
     [isStudentAffairs, track],
   );
+  useEffect(() => {
+    const label = navigation.find((item) => item.id === page)?.label || 'Overview';
+    const description = page === 'overview'
+      ? 'Manage campus clubs, upcoming events and student services in one place.'
+      : pageDescription(page, role) || `Manage ${label.toLowerCase()} in Amrita Sangam.`;
+    document.title = `${label} | Amrita Sangam`;
+    document.querySelector('meta[name="description"]')?.setAttribute('content', description);
+  }, [navigation, page, role]);
   const isLeadership = (membership) => membership.membershipStatus === 'active'
     && membership.position === 'executive'
     && !membership.officeBearerGroup;
@@ -1293,9 +1324,15 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
   const filteredClubs = useMemo(() => data.clubs.filter((club) =>
     `${club.name} ${club.category} ${club.description}`.toLowerCase().includes(search.toLowerCase())), [data.clubs, search]);
   const featuredEvents = useMemo(() => data.events
-    .filter((event) => event.status === 'approved' && new Date(event.eventDate) >= new Date())
+    .filter((event) => event.status === 'approved' && isUpcomingEvent(event))
     .sort((first, second) => new Date(first.eventDate) - new Date(second.eventDate))
     .slice(0, 8), [data.events]);
+  const eventsVisibleToAccount = role === 'student' || profile.isClubAccount
+    ? data.events.filter(isUpcomingEvent)
+    : data.events;
+  const eventDialogEvents = role === 'student' || profile.isClubAccount
+    ? data.events.filter(isUpcomingEvent)
+    : data.events;
 
   const createRecord = async (type, values, eventToEdit = null) => {
     setBusy(true);
@@ -1345,6 +1382,17 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
       await refresh();
     } catch (error) {
       setToast(error.message);
+    }
+  };
+  const registerForEvent = async (event) => {
+    try {
+      await api('/registrations', { method: 'POST', body: { eventId: event._id } });
+      setToast('You’re registered for this event.');
+      await refresh();
+      return true;
+    } catch (error) {
+      setToast(error.message);
+      return false;
     }
   };
 
@@ -1550,7 +1598,7 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
           executive: 'CLUB EXECUTIVE',
           student: 'STUDENT COMMUNITY',
         }[track]}</div>
-        <nav className="side-nav" aria-label="Main navigation">
+        <nav className="side-nav" id="campus-navigation" aria-label="Main navigation">
           {navigation.map(({ id, label, icon: Icon }) => (
             <button key={id} className={`nav-item ${page === id ? 'nav-active' : ''}`} onClick={() => navigate(id)}>
               <Icon size={18} strokeWidth={1.8} /><span>{label}</span>
@@ -1562,19 +1610,21 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
           <div className="sidebar-help"><div className="help-icon"><CircleHelp size={17} /></div><strong>{hasVerifiedClubAccess ? `${verifiedClubName} account` : track === 'president' ? 'You’re the president' : copyTrack === 'student-affairs' ? 'Campus-wide view' : copyTrack === 'mentor' ? 'Your assigned clubs' : copyTrack === 'office-bearer' ? 'Lead your community' : copyTrack === 'executive' ? 'Build together' : 'Find your people'}</strong><span>{hasVerifiedClubAccess ? 'This workspace is scoped to the club account used at sign-in.' : track === 'president' ? 'Your mentor approves events; you recruit and report.' : copyTrack === 'student-affairs' ? 'Create clubs and coordinate mentors.' : copyTrack === 'mentor' ? 'Guide club leaders and event approvals.' : copyTrack === 'office-bearer' ? 'Welcome members and keep your club moving.' : copyTrack === 'executive' ? 'Help bring club events to life.' : 'Campus life can get busy. We’re right here.'}</span></div>
           <div className="profile-switch">
             <Avatar person={profile} className="user-avatar" />
-            <span className="profile-meta"><strong>{profile.name}</strong><small>{profileTrackLabel(profile, track, verifiedClubName)}</small><small>{profile.email}</small></span>
+            <span className="profile-meta"><strong>{profile.name}</strong><small>{profileTrackLabel(profile, track, verifiedClubName, data.memberships)}</small><small><a href={`mailto:${profile.email}`}>{profile.email}</a></small></span>
             {!profile.isClubAccount && <button className="profile-edit-button" onClick={() => navigate('profile')}>Profile</button>}
             <button className="sidebar-logout" onClick={onLogout} aria-label="Sign out"><LogOut size={16} /></button>
           </div>
         </div>
       </aside>
+      {menuOpen && <button className="mobile-menu-backdrop" type="button" aria-label="Close navigation" onClick={() => setMenuOpen(false)} />}
 
       <main className="main-panel">
         <header className="topbar">
-          <button className="mobile-menu icon-button" aria-label="Open navigation" onClick={() => setMenuOpen(!menuOpen)}><Menu size={21} /></button>
+          <button className="mobile-menu icon-button" type="button" aria-label={menuOpen ? 'Close navigation' : 'Open navigation'}
+            aria-expanded={menuOpen} aria-controls="campus-navigation" onClick={() => setMenuOpen(!menuOpen)}><Menu size={21} /></button>
           <div className="breadcrumbs"><span>Amrita Sangam</span>{hasVerifiedClubAccess && <><span className="crumb-slash">/</span><span>{verifiedClubName}</span></>}<span className="crumb-slash">/</span><strong>{currentPage.label}</strong></div>
           <div className="topbar-right">
-            <span className="role-pill">{profileTrackLabel(profile, track, verifiedClubName)}</span>
+            <span className="role-pill">{profileTrackLabel(profile, track, verifiedClubName, data.memberships)}</span>
             <ThemeToggle theme={theme} onToggle={onToggleTheme} />
             <button className="button button-outline topbar-logout" onClick={onLogout}><LogOut size={15} /> Log out</button>
             <div className="notification-menu">
@@ -1641,10 +1691,10 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
                     'verified-office-bearer': `VERIFIED CLUB ACCOUNT · ${verifiedClubName.toUpperCase()}`,
                     executive: 'MAKE YOUR NEXT IDEA HAPPEN',
                     student: 'A GOOD DAY TO GET INVOLVED',
-                  }[track]}</span><h2>{track === 'president' ? <>Your club,<br />your vision.</> : copyTrack === 'student-affairs' ? <>Good clubs make<br />a great campus.</> : copyTrack === 'mentor' ? <>Guide the people<br />who lead.</> : copyTrack === 'office-bearer' ? <>Big ideas start<br />with showing up.</> : copyTrack === 'executive' ? <>Plan together.<br />Make it happen.</> : <>Big ideas start<br />with showing up.</>}</h2><p>{track === 'president' ? 'Recruit your executives, get events approved, and keep your mentor in the loop.' : copyTrack === 'student-affairs' ? 'Build strong club foundations and keep every community supported.' : copyTrack === 'mentor' ? 'Your guidance helps student leaders turn plans into progress.' : copyTrack === 'office-bearer' ? 'Welcome new members and help your club make its mark.' : copyTrack === 'executive' ? 'Your next event starts with one good idea.' : 'Meet a club, explore events, or start something new.'}</p>
+                  }[track]}</span><h2>{track === 'president' ? <>Lead club<br />activities.</> : copyTrack === 'student-affairs' ? <>Manage campus<br />clubs and events.</> : copyTrack === 'mentor' ? <>Review club<br />requests.</> : copyTrack === 'office-bearer' ? <>Manage club<br />members.</> : copyTrack === 'executive' ? <>Manage your<br />club activity.</> : <>Explore clubs<br />and upcoming events.</>}</h2><p>{track === 'president' ? 'Recruit executives, submit event proposals, and coordinate with your faculty mentor.' : copyTrack === 'student-affairs' ? 'Create clubs, coordinate mentors, and review campus requests.' : copyTrack === 'mentor' ? 'Review event, equipment, and funding requests for your clubs.' : copyTrack === 'office-bearer' ? 'Review applications and help maintain the club roster.' : copyTrack === 'executive' ? 'Plan events and request equipment for your club.' : 'View club details and register for upcoming campus events.'}</p>
                     <button className="button button-light" onClick={() => navigate(track === 'president' ? 'applications' : copyTrack === 'student-affairs' ? 'clubs' : copyTrack === 'mentor' ? 'members' : copyTrack === 'office-bearer' ? 'applications' : copyTrack === 'executive' ? 'events' : 'clubs')}>{track === 'president' ? 'Recruit executives' : copyTrack === 'student-affairs' ? 'Manage clubs' : copyTrack === 'mentor' ? 'Support club leaders' : copyTrack === 'office-bearer' ? 'Review applications' : track === 'executive' ? 'Explore events' : 'Find your community'} <ArrowRight size={16} /></button>
                   </div>
-                  <div className="banner-graphic" aria-hidden="true"><span className="graphic-ring ring-a" /><span className="graphic-ring ring-b" /><span className="graphic-caption">MAKE<br />IT YOURS</span><span className="graphic-orbit"><i /><i /><i /></span></div>
+                  <div className="banner-graphic" aria-hidden="true"><span className="graphic-ring ring-a" /><span className="graphic-ring ring-b" /><span className="graphic-caption">CLUBS<br />&amp; EVENTS</span><span className="graphic-orbit"><i /><i /><i /></span></div>
                 </section>}
 
               {hasVerifiedClubAccess
@@ -1656,7 +1706,7 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
                 </section>
                 : <section className="stat-grid">
                   <StatCard icon={Compass} label="Clubs to explore" value={data.summary.clubs} foot="Find your corner of campus" tone="lavender" />
-                  <StatCard icon={CalendarDays} label="Events on the calendar" value={data.events.filter((event) => event.status === 'approved').length} foot="More moments, less scrolling" tone="peach" />
+                  <StatCard icon={CalendarDays} label="Upcoming events" value={data.events.filter((event) => event.status === 'approved' && isUpcomingEvent(event)).length} foot="Approved events that have not ended" tone="peach" />
                   <StatCard icon={Users} label="People showing up" value={data.summary.members} foot="Campus is better together" tone="mint" />
                   <StatCard icon={Clock3} label="Needs a little attention" value={isStudentAffairs
                     ? notificationCounts.events + notificationCounts.funding + notificationCounts.eventReports
@@ -1667,9 +1717,9 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
               <section className="portal-shortcuts" aria-label="Campus services">
                 <h2>Campus services</h2>
                 <div className="portal-shortcut-grid">
-                  {navigation.filter(({ id }) => id !== 'overview').map(({ id, label, icon: Icon }) => (
+                  {navigation.map(({ id, label, icon: Icon }) => (
                     <button className="portal-shortcut" key={id} onClick={() => navigate(id)}>
-                      <span>{label}</span><i><Icon size={17} /></i>
+                      <i aria-hidden="true"><Icon size={17} /></i><span>{label}</span>
                     </button>
                   ))}
                 </div>
@@ -1693,9 +1743,9 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
 
               <div className="content-grid">
                 <section className="surface-card feature-card">
-                  <SectionHeading title="A few good things coming up" subtitle="Make a little room in your calendar." action="See all events" onAction={() => navigate('events')} />
-                  {data.events.filter((event) => event.status === 'approved').slice(0, 3).map((event, index) => <EventRow key={event._id} event={event} index={index} onDetails={() => setSelectedEvent(event)} />)}
-                  {!data.events.some((event) => event.status === 'approved') && <EmptyState title="A little quiet for now" text="New events will find their way here." />}
+                  <SectionHeading title="Upcoming events" subtitle="Approved events that have not ended." action="See all events" onAction={() => navigate('events')} />
+                  {featuredEvents.slice(0, 3).map((event, index) => <EventRow key={event._id} event={event} index={index} onDetails={() => setSelectedEvent(event)} />)}
+                  {!featuredEvents.length && <EmptyState title="No upcoming events" text="Approved events will appear here when they are scheduled." />}
                 </section>
                 <section className="surface-card announcement-card">
                   <SectionHeading title="Around campus" subtitle="Notes from your community." action="All notes" onAction={() => navigate('announcements')} />
@@ -1723,6 +1773,7 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
                     canApply={!profile.isClubAccount && role === 'student'}
                     onApply={() => { setSelectedClub(club); setModal('apply'); }}
                     onEdit={() => { setSelectedClub(club); setModal('editClub'); }}
+                    onDetails={() => { setSelectedClub(club); setModal('clubDetails'); }}
                   />;
                 })}
               </div>
@@ -1734,7 +1785,7 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
             <div className="surface-card list-surface">
               <div className="workflow-heading"><SectionHeading title="Make a date with campus" subtitle="Good company is already on the calendar." /><WorkflowFilter value={workflowFilter} onChange={setWorkflowFilter} /></div>
               <div className="events-grid">
-              {data.events.filter((event) => statusMatchesFilter(event.status, workflowFilter)).map((event, index) => {
+              {eventsVisibleToAccount.filter((event) => statusMatchesFilter(event.status, workflowFilter)).map((event, index) => {
                 const clubId = event.clubId?._id || event.clubId;
                 const eventPosition = data.memberships.find((member) => (member.clubId?._id || member.clubId) === clubId);
                 const canTakeAttendance = Boolean(
@@ -1751,16 +1802,19 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
                 const isCampusOrganizerEvent = event.clubId?.organizationType === 'event_organizer';
                 const canEditEvent = isCampusOrganizerEvent
                   ? isStudentAffairs && event.status === 'student_affairs_pending'
-                  : canSubmitClubRequest && !event.mentorReviewedBy && ['draft', 'mentor_pending'].includes(event.status);
+                  : canSubmitClubRequest && !mentorReviewStarted(event) && ['draft', 'mentor_pending'].includes(event.status);
+                const showClubAccountEdit = profile.isClubAccount && String(clubId) === String(profile.verifiedClubId);
                 const canReviewEvent = event.status === 'mentor_pending'
                   ? role === 'faculty_coordinator' && hasPendingMentorApproval(event, profile._id)
                   : event.status === 'student_affairs_pending' && isStudentAffairs;
                 return <div key={event._id} className="event-workflow">
-                  <EventRow event={event} index={index} canReview={canReviewEvent} needsReview={canReviewEvent} canResubmit={canSubmitClubRequest} canEdit={canEditEvent} onEdit={() => { setEditingEvent(event); setModal('editEvent'); }} onDetails={() => setSelectedEvent(event)} onReview={(status) => review('event', event, status)} onResubmit={() => perform(() => api(`/events/${event._id}/submit`, { method: 'PATCH' }), 'Event resubmitted to the club mentor.')} />
+                  <EventRow event={event} index={index} canReview={canReviewEvent} needsReview={canReviewEvent} canResubmit={canSubmitClubRequest} canEdit={canEditEvent}
+                    showEdit={showClubAccountEdit} editDisabled={showClubAccountEdit && !canEditEvent}
+                    onEdit={() => { setEditingEvent(event); setModal('editEvent'); }} onDetails={() => setSelectedEvent(event)} onReview={(status) => review('event', event, status)} onResubmit={() => perform(() => api(`/events/${event._id}/submit`, { method: 'PATCH' }), 'Event resubmitted to the club mentor.')} />
                   {canTakeAttendance && event.status === 'approved' && <AttendancePanel event={event} onError={setToast} />}
                 </div>;
               })}
-              {!data.events.some((event) => statusMatchesFilter(event.status, workflowFilter)) && <EmptyState title="No events in this view" text={workflowFilter === 'all' ? 'Approved campus events will show up here.' : 'Try another status filter to see more events.'} />}
+              {!eventsVisibleToAccount.some((event) => statusMatchesFilter(event.status, workflowFilter)) && <EmptyState title="No events in this view" text={workflowFilter === 'all' ? 'Upcoming events will show up here.' : 'Try another status filter to see more events.'} />}
               </div>
             </div>
           )}
@@ -1873,15 +1927,25 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
                 })}
                 {!data.equipment.length && <EmptyState title="Nothing in the loan cupboard yet" text="Club equipment will be listed here when it’s available." />}
               </div>
-              {data.borrows.some((borrow) => ['mentor_pending', 'student_affairs_pending'].includes(borrow.status)) && <section className="surface-card list-surface workflow-list">
-                <SectionHeading title="Equipment approvals" subtitle="Requests move from the club mentor to Student Affairs." />
-                {data.borrows.filter((borrow) => ['mentor_pending', 'student_affairs_pending'].includes(borrow.status)).map((borrow) => {
-                  const mentorReview = borrow.status === 'mentor_pending' && role === 'faculty_coordinator'
-                    && hasPendingMentorApproval(borrow, profile._id);
-                  const affairsReview = borrow.status === 'student_affairs_pending' && isStudentAffairs;
-                  return <BorrowApprovalRow key={borrow._id} borrow={borrow} canReview={mentorReview || affairsReview} onReview={(status) => review('borrow', borrow, status)} />;
-                })}
-              </section>}
+              {data.borrows.some((borrow) => ['mentor_pending', 'student_affairs_pending'].includes(borrow.status))
+                || (profile.isClubAccount && data.borrows.length > 0) ? <section className="surface-card list-surface workflow-list">
+              <SectionHeading title={profile.isClubAccount ? 'Equipment requests' : 'Equipment approvals'} subtitle="Requests move from the club mentor to Student Affairs." />
+              {data.borrows.filter((borrow) =>
+                ['mentor_pending', 'student_affairs_pending'].includes(borrow.status)
+                || (profile.isClubAccount
+                  && String(borrow.clubId?._id || borrow.clubId) === String(profile.verifiedClubId))).map((borrow) => {
+                const mentorReview = borrow.status === 'mentor_pending' && role === 'faculty_coordinator'
+                  && hasPendingMentorApproval(borrow, profile._id);
+                const affairsReview = borrow.status === 'student_affairs_pending' && isStudentAffairs;
+                const clubRequest = profile.isClubAccount
+                  && String(borrow.clubId?._id || borrow.clubId) === String(profile.verifiedClubId);
+                return <BorrowApprovalRow key={borrow._id} borrow={borrow} canReview={mentorReview || affairsReview}
+                  canEdit={clubRequest}
+                  onUpdate={(values) => api(`/equipment-borrows/${borrow._id}`, { method: 'PATCH', body: values }).then(refresh)}
+                  onError={setToast}
+                  onReview={(status) => review('borrow', borrow, status)} />;
+              })}
+              </section> : null}
             </>
           )}
 
@@ -1893,7 +1957,12 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
                   const canReviewFunding = (['pending', 'mentor_pending'].includes(item.status)
                     && role === 'faculty_coordinator' && hasPendingMentorApproval(item, profile._id))
                     || (item.status === 'student_affairs_pending' && isStudentAffairs);
-                  return <FundingRow key={item._id} request={item} canReview={canReviewFunding} onReview={(status) => review('funding', item, status)} />;
+                  const clubRequest = profile.isClubAccount
+                    && String(item.clubId?._id || item.clubId) === String(profile.verifiedClubId);
+                  return <FundingRow key={item._id} request={item} canReview={canReviewFunding} canEdit={clubRequest}
+                    onUpdate={(values) => api(`/funding-requests/${item._id}`, { method: 'PATCH', body: values }).then(refresh)}
+                    onError={setToast}
+                    onReview={(status) => review('funding', item, status)} />;
                 })}
                 {!data.funding.some((item) => statusMatchesFilter(item.status, workflowFilter)) && <EmptyState title="No funding requests in this view" text="Try another status filter or return when a club submits a request." />}
             </section>
@@ -1947,16 +2016,20 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
               <div className="workflow-heading"><SectionHeading title="Event reports & OD attendance" /><WorkflowFilter value={workflowFilter} onChange={setWorkflowFilter} /></div>
               {data.eventReports.filter((report) => statusMatchesFilter(report.status, workflowFilter)).map((report) => {
                 const clubId = report.clubId?._id || report.clubId;
-                const canSubmitReport = data.memberships.some((membership) =>
+                const canSubmitReport = Boolean(profile.isClubAccount
+                  && String(clubId) === String(profile.verifiedClubId))
+                  || data.memberships.some((membership) =>
                   (membership.clubId?._id || membership.clubId) === clubId
                   && (isLeadership(membership)
                     || (hasVerifiedClubAccess
                       && String(clubId) === String(profile.verifiedClubId)
                       && isOfficeBearerPosition(membership))));
+                const clubReport = profile.isClubAccount && String(clubId) === String(profile.verifiedClubId);
                 const canReviewReport = (report.status === 'mentor_pending'
                   && role === 'faculty_coordinator' && hasPendingMentorApproval(report, profile._id))
                   || (report.status === 'student_affairs_pending' && isStudentAffairs);
-                return <ReportRow key={report._id} report={report} canResubmit={canSubmitReport} canReview={canReviewReport}
+                return <ReportRow key={report._id} report={report} canResubmit={canSubmitReport && !profile.isClubAccount}
+                  canEdit={clubReport} canReview={canReviewReport}
                   onReview={(status) => review('eventReport', report, status)}
                   onDownload={() => apiDownload(`/event-reports/${report._id}/roster`, report.rosterFileName || 'event-attendance.csv')
                     .catch((error) => setToast(error.message))}
@@ -1977,23 +2050,28 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
             </section>
           )}
         </div>
+        <SiteFooter />
       </main>
 
       {toast && <div className="toast" role="status"><span><Check size={15} /></span>{toast}<button onClick={() => setToast('')} aria-label="Dismiss"><X size={15} /></button></div>}
       {selectedEvent && <EventDetailsDialog
         event={selectedEvent}
-        events={data.events}
+        events={eventDialogEvents}
         registrations={registrationByEvent}
         onNavigate={setSelectedEvent}
         onClose={() => setSelectedEvent(null)}
-        canRegister={role !== 'college_admin'}
-        onRegister={(event) => perform(() => api('/registrations', { method: 'POST', body: { eventId: event._id } }), 'You’re registered for this event.')}
-        onCancel={(event) => {
-          const registration = registrationByEvent.get(event._id);
-          return registration && perform(() => api(`/registrations/${registration._id}`, { method: 'DELETE' }), 'Your registration has been cancelled.');
-        }}
+        canRegister={role === 'student'}
+        onRegister={registerForEvent}
       />}
-      {modal && <Modal
+      {modal === 'clubDetails' && selectedClub && <ClubDetailsDialog
+        club={selectedClub}
+        onClose={() => setModal('')}
+        canApply={!profile.isClubAccount && role === 'student'}
+        isMember={membershipClubIds.has(selectedClub._id)}
+        application={applicationByClub.get(selectedClub._id)}
+        onApply={() => setModal('apply')}
+      />}
+      {modal && modal !== 'clubDetails' && <Modal
         type={modal}
         clubs={modal === 'apply' ? data.clubs : ['event', 'editEvent'].includes(modal) ? (isStudentAffairs ? data.clubs : eventClubList) : memberClubList}
         allClubs={data.clubs}
@@ -2002,7 +2080,7 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
         venues={data.venues}
         reportEvents={reportableEvents}
         equipmentItems={borrowableEquipment}
-        events={data.events}
+        events={eventDialogEvents}
         selectedEquipment={modal === 'borrow' ? selectedEquipment : null}
         profile={profile}
         selectedClub={modal === 'club' ? null : modal === 'apply' || modal === 'editClub' ? selectedClub : ['event', 'editEvent'].includes(modal) ? eventClubList[0] : memberClubList[0]}
@@ -2273,6 +2351,13 @@ function IctsEditAccountModal({ person, onClose, onSaved }) {
 }
 
 function IctsDashboard({ onLogout, theme, onToggleTheme }) {
+  useEffect(() => {
+    document.title = 'ICTS account desk | Amrita Sangam';
+    document.querySelector('meta[name="description"]')?.setAttribute(
+      'content',
+      'Create and manage campus accounts and club credentials in Amrita Sangam.',
+    );
+  }, []);
   const [view, setView] = useState('accounts');
   const [people, setPeople] = useState([]);
   const [credentialClubs, setCredentialClubs] = useState([]);
@@ -2519,7 +2604,7 @@ function IctsDashboard({ onLogout, theme, onToggleTheme }) {
               </div>
               {visible.map((person) => <article className="member-row" key={person._id}>
                 <span className="application-avatar">{initials(person.name)}</span>
-                <span className="member-person"><strong>{person.name}</strong><small>{person.email}</small><small>{person.department ? `${person.department}${person.joiningYear ? ` · joined ${person.joiningYear}` : ''}` : person.designation || roleNames[person.role]}</small>{person.identityType && <small>{person.identityType === 'faculty' ? 'Faculty' : 'Student'}{person.school ? ` · ${person.school}` : ''}</small>}</span>
+                <span className="member-person"><strong>{person.name}</strong><small><a href={`mailto:${person.email}`}>{person.email}</a></small><small>{person.department ? `${person.department}${person.joiningYear ? ` · joined ${person.joiningYear}` : ''}` : person.designation || roleNames[person.role]}</small>{person.identityType && <small>{person.identityType === 'faculty' ? 'Faculty' : 'Student'}{person.school ? ` · ${person.school}` : ''}</small>}</span>
                 <span className="status status-approved">{person.facultyId || person.registerNumber || (person.role === 'college_admin' ? profileTrackLabel(person, 'student-affairs') : roleNames[person.role])}</span>
                 <button className="button button-outline button-small" type="button" onClick={() => setEditingPerson(person)} aria-label={`Edit ${person.name}'s account`}><Pencil size={14} /> Edit</button>
                 <button className="button button-danger button-small" type="button" disabled={Boolean(deletingId)}
@@ -2532,6 +2617,7 @@ function IctsDashboard({ onLogout, theme, onToggleTheme }) {
           </>}
         </div>
       </main>
+      <SiteFooter />
       {editingPerson && <IctsEditAccountModal person={editingPerson} onClose={() => setEditingPerson(null)} onSaved={async () => {
         await load();
         setEditingPerson(null);
@@ -2548,12 +2634,22 @@ function pageDescription(page, role) {
     applications: role === 'student' ? '' : 'Make room for someone new in your community.',
     members: 'Keep the people, roles, and good work connected.',
     chats: 'Stay close to your club community with member-only conversations.',
-    equipment: 'Share the good stuff. Bring it back ready for next time.',
+    equipment: 'Request club equipment with a quantity, time range and reason.',
     reports: 'A thoughtful snapshot of the clubs and work in motion.',
     announcements: 'The latest notes from clubs across your campus.',
     profile: 'Your campus details, contact number, photo and password.',
   };
   return descriptions[page];
+}
+
+function SiteFooter() {
+  return <footer className="site-footer">
+    <span>© {new Date().getFullYear()} Amrita Sangam</span>
+    <nav aria-label="Legal information">
+      <a href="/privacy-policy">Privacy policy</a>
+      <a href="/terms-and-conditions">Terms and conditions</a>
+    </nav>
+  </footer>;
 }
 
 function StatCard({ icon: Icon, label, value, foot, tone }) {
@@ -2591,7 +2687,7 @@ function ReviewHistory({ entries }) {
   </details>;
 }
 
-function EventRow({ event, index = 0, canReview, needsReview, canResubmit, canEdit, onEdit, onDetails, onReview, onResubmit }) {
+function EventRow({ event, index = 0, canReview, needsReview, canResubmit, canEdit, showEdit, editDisabled, onEdit, onDetails, onReview, onResubmit }) {
   const date = event.eventDate ? new Date(event.eventDate) : null;
   const eventDate = date && !Number.isNaN(date.getTime()) ? date : null;
   const count = event.registeredCount || 0;
@@ -2605,7 +2701,7 @@ function EventRow({ event, index = 0, canReview, needsReview, canResubmit, canEd
     <div className="event-details"><div className="event-meta"><span>{event.clubId?.name || 'Campus club'}</span><span className={statusClass(event.status)}>{event.status.replaceAll('_', ' ')}</span>{needsReview && <span className="notification-inline-label">NEEDS YOUR REVIEW</span>}</div><h3>{event.title}</h3><p><CalendarDays size={13} /> {formatDate(event.eventDate, { weekday: 'short', month: 'short', day: 'numeric' })}{event.venueId?.name && <> <span>·</span> {event.venueId.name}</>}</p>{event.coHostIds?.length > 0 && <small className="event-cohosts">Co-hosted with {event.coHostIds.map((host) => host.name).join(', ')}</small>}{event.createdBy?.name && <small>Proposed by {event.createdBy.name}</small>}<ReviewHistory entries={reviewHistoryFor(event)} />{event.rejectionFeedback && <small className="rejection-feedback">Feedback: {event.rejectionFeedback}</small>}</div>
     <div className="event-row-action">
       <button className="text-link" type="button" onClick={onDetails}>View details <ArrowRight size={14} /></button>
-      {canEdit && <button className="button button-outline" type="button" onClick={onEdit}>Edit event</button>}
+      {(canEdit || showEdit) && <button className="button button-outline" type="button" disabled={editDisabled} onClick={onEdit} title={editDisabled ? 'Editing is disabled after mentor review has started.' : undefined}>Edit event</button>}
       {canReview && ['mentor_pending', 'student_affairs_pending'].includes(event.status) && <div className="review-actions"><button className="button button-outline" onClick={() => onReview('approved')}>Approve</button><button className="button button-quiet" onClick={() => onReview('rejected')}>Decline</button></div>}
       {canResubmit && ['draft', 'rejected'].includes(event.status) && <button className="button button-outline" onClick={onResubmit}>Submit for approval</button>}
       {typeof event.capacity === 'number' && <small>{count}/{event.capacity} places</small>}
@@ -2613,7 +2709,7 @@ function EventRow({ event, index = 0, canReview, needsReview, canResubmit, canEd
   </article>;
 }
 
-function EventDetailsDialog({ event, events, registrations, onNavigate, onClose, canRegister, onRegister, onCancel }) {
+function EventDetailsDialog({ event, events, registrations, onNavigate, onClose, canRegister, onRegister }) {
   const [confirmation, setConfirmation] = useState('');
   const [pendingEvent, setPendingEvent] = useState(null);
   const [slideDirection, setSlideDirection] = useState(0);
@@ -2626,8 +2722,7 @@ function EventDetailsDialog({ event, events, registrations, onNavigate, onClose,
   const hasMultipleEvents = carouselEvents.length > 1;
 
   const confirmAction = async () => {
-    if (confirmation === 'register') await onRegister(event);
-    if (confirmation === 'cancel') await onCancel(event);
+    if (confirmation === 'register' && !await onRegister(event)) return;
     setConfirmation('');
     onClose();
   };
@@ -2713,11 +2808,11 @@ function EventDetailsDialog({ event, events, registrations, onNavigate, onClose,
         </div>
         {slideEvent.coHostIds?.length > 0 && <p className="event-cohosts">Co-hosted with {slideEvent.coHostIds.map((host) => host.name).join(', ')}</p>}
         {slideEvent._id === event._id && confirmation && <div className="registration-confirm" role="group" aria-label="Confirm event registration">
-          <strong>{confirmation === 'register' ? 'Do you want to register for this event?' : 'Do you want to cancel your registration?'}</strong>
+          <strong>Do you want to register for this event?</strong>
           <div><button className="button button-primary" type="button" onClick={confirmAction}>Yes</button><button className="button button-outline" type="button" onClick={() => setConfirmation('')}>No</button></div>
         </div>}
         {slideEvent._id === event._id && canRegister && slideEvent.status === 'approved' && !confirmation && (slideRegistered
-          ? <button className="button button-outline event-dialog-action" type="button" onClick={() => setConfirmation('cancel')}>Cancel registration</button>
+          ? <span className="registered-event-status" role="status"><Check size={15} /> Registered</span>
           : <button className="button button-primary event-dialog-action" type="button" disabled={full} onClick={() => setConfirmation('register')}>{full ? 'Registration is full' : 'Register'}</button>)}
         {slideEvent._id === event._id && (!canRegister || slideEvent.status !== 'approved') && <button className="button button-primary event-dialog-action" type="button" onClick={onClose}>Back to events</button>}
       </div>
@@ -2895,19 +2990,53 @@ function EventReportSummary({ details }) {
   </details>;
 }
 
-function BorrowApprovalRow({ borrow, canReview, onReview }) {
+function BorrowApprovalRow({ borrow, canReview, canEdit, onReview, onUpdate, onError }) {
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const editable = borrow.status === 'mentor_pending' && !mentorReviewStarted(borrow);
+  const save = async (event) => {
+    event.preventDefault();
+    setBusy(true);
+    const values = Object.fromEntries(new FormData(event.currentTarget).entries());
+    values.quantity = Number(values.quantity);
+    values.startDate = new Date(values.startDate).toISOString();
+    values.endDate = new Date(values.endDate).toISOString();
+    values.dueDate = values.endDate;
+    try {
+      await onUpdate(values);
+      setEditing(false);
+    } catch (error) {
+      onError(error.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const requestedStart = borrow.startDate && new Date(borrow.startDate) > new Date()
+    ? borrow.startDate
+    : new Date(Date.now() + 5 * 60 * 1000).toISOString();
+  const requestedEnd = borrow.endDate || borrow.dueDate;
   return <article className="funding-row">
     <div className="funding-symbol"><Laptop size={17} /></div>
-    <div className="funding-details"><strong>{borrow.equipmentId?.name || 'Equipment request'} · {borrow.clubId?.name}</strong>{borrow.eventId?.title && <span>For {borrow.eventId.title}</span>}<span>Requested by {borrow.profileId?.name || 'club president'} · Due {formatDate(borrow.dueDate)}</span>{borrow.purpose && <span>Purpose: {borrow.purpose}</span>}<ReviewHistory entries={reviewHistoryFor(borrow)} />{borrow.rejectionFeedback && <small className="rejection-feedback">Feedback: {borrow.rejectionFeedback}</small>}</div>
-    <div className="funding-actions"><span className={statusClass(borrow.status)}>{borrow.status.replaceAll('_', ' ')}</span>{canReview && <div className="review-actions"><button className="review-accept" onClick={() => onReview('approved')} aria-label="Approve equipment request"><Check size={15} /></button><button className="review-decline" onClick={() => onReview('rejected')} aria-label="Reject equipment request"><X size={15} /></button></div>}</div>
+    <div className="funding-details"><strong>{borrow.equipmentId?.name || 'Equipment request'} · {borrow.clubId?.name}</strong><span>Quantity: {borrow.quantity || 1}{borrow.eventId?.title ? ` · For ${borrow.eventId.title}` : ''}</span><span>Requested by {borrow.profileId?.name || 'club president'} · {formatDate(requestedStart, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })} to {formatDate(requestedEnd, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })}</span>{borrow.purpose && <span>Reason: {borrow.purpose}</span>}<ReviewHistory entries={reviewHistoryFor(borrow)} />{borrow.rejectionFeedback && <small className="rejection-feedback">Feedback: {borrow.rejectionFeedback}</small>}</div>
+    <div className="funding-actions"><span className={statusClass(borrow.status)}>{borrow.status.replaceAll('_', ' ')}</span>{canEdit && <button className="button button-outline button-small" type="button" disabled={!editable} title={!editable ? 'Editing is disabled after mentor review has started.' : undefined} onClick={() => setEditing(!editing)}>{editing ? 'Cancel edit' : 'Edit request'}</button>}{canReview && <div className="review-actions"><button className="review-accept" onClick={() => onReview('approved')} aria-label="Approve equipment request"><Check size={15} /></button><button className="review-decline" onClick={() => onReview('rejected')} aria-label="Reject equipment request"><X size={15} /></button></div>}</div>
+    {editing && editable && <form className="modal-form" onSubmit={save}>
+      <label className="field-label">Quantity<input name="quantity" type="number" min="1" max={borrow.equipmentId?.availableQuantity || borrow.quantity || 1} defaultValue={borrow.quantity || 1} required /></label>
+      <div className="form-row">
+        <label className="field-label">Needed from<input name="startDate" type="datetime-local" min={toDateTimeInput(new Date(Date.now() + 5 * 60 * 1000))} defaultValue={toDateTimeInput(requestedStart)} required /></label>
+        <label className="field-label">Needed until<input name="endDate" type="datetime-local" min={toDateTimeInput(requestedStart)} defaultValue={toDateTimeInput(requestedEnd)} required /></label>
+      </div>
+      <label className="field-label">Reason for request<textarea name="purpose" maxLength="1000" rows="2" defaultValue={borrow.purpose || ''} required /></label>
+      <button className="button button-primary" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save changes'}</button>
+    </form>}
   </article>;
 }
 
-function ReportRow({ report, canResubmit, canReview, onReview, onDownload, onResubmit, onError }) {
+function ReportRow({ report, canResubmit, canEdit, canReview, onReview, onDownload, onResubmit, onError }) {
   const [editing, setEditing] = useState(false);
   const [images, setImages] = useState({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const canEditBeforeReview = report.status === 'mentor_pending' && !mentorReviewStarted(report);
   const submitRevision = async (event) => {
     event.preventDefault();
     setBusy(true);
@@ -2952,9 +3081,10 @@ function ReportRow({ report, canResubmit, canReview, onReview, onDownload, onRes
     <div className="review-actions">
       <button className="button button-outline button-small" onClick={onDownload}><Download size={14} /> Download OD roster</button>
       {canReview && <><button className="button button-outline button-small" onClick={() => onReview('approved')}>Approve</button><button className="button button-quiet button-small" onClick={() => onReview('rejected')}>Reject</button></>}
+      {canEdit && <button className="button button-outline button-small" disabled={!canEditBeforeReview} title={!canEditBeforeReview ? 'Editing is disabled after mentor review has started.' : undefined} onClick={() => setEditing(!editing)}>{editing ? 'Close edit' : 'Edit report'}</button>}
       {canResubmit && report.status === 'rejected' && <button className="button button-outline button-small" onClick={() => setEditing(!editing)}>{editing ? 'Close edit' : 'Revise & resubmit'}</button>}
     </div>
-    {editing && <form className="modal-form report-edit-form" onSubmit={submitRevision}>
+    {editing && (canEditBeforeReview || (canResubmit && report.status === 'rejected')) && <form className="modal-form report-edit-form" onSubmit={submitRevision}>
       {report.reportDetails
         ? <EventReportFields initialDetails={report.reportDetails} images={images} onImageChange={pickImage} />
         : <>
@@ -2970,17 +3100,27 @@ function ReportRow({ report, canResubmit, canReview, onReview, onDownload, onRes
   </article>;
 }
 
-function ClubCard({ club, index, application, isMember, onApply, isAdmin, canApply, onEdit }) {
+function ClubCard({ club, index, application, isMember, onApply, isAdmin, canApply, onEdit, onDetails }) {
   const colors = ['club-lilac', 'club-peach', 'club-mint', 'club-blue'];
   const icon = [Compass, Laptop, Users][index % 3];
   const Icon = icon;
-  return <article className="club-card">
+  const openDetails = (event) => {
+    if (event.target.closest('button, a, input, select, textarea')) return;
+    onDetails();
+  };
+  return <article className="club-card club-card-interactive" onClick={openDetails}
+    onKeyDown={(event) => {
+      if ((event.key === 'Enter' || event.key === ' ') && event.target === event.currentTarget) {
+        event.preventDefault();
+        onDetails();
+      }
+    }} tabIndex="0" aria-label={`View ${club.name} club details`}>
     <div className={`club-art ${colors[index % colors.length]}`}>
       {club.logoUrl
         ? <img className="club-logo" src={club.logoUrl} alt={`${club.name} logo`} />
         : <><span className="club-art-orbit" /><span className="club-icon"><Icon size={22} /></span><span className="club-art-number">0{index + 1}</span></>}
     </div>
-    <div className="club-card-body"><div className="club-category">{club.category || 'Campus community'}</div><h2>{club.name}</h2><p>{club.description || 'A welcoming place to meet, learn, and make things happen.'}</p>
+    <div className="club-card-body"><div className="club-category">{club.category || 'Campus community'}</div><h2>{club.name}</h2><p>{club.description || 'Club information has not been added yet.'}</p>
       <span className="club-coordinator">{club.clubType === 'technical' ? 'Technical club' : 'Non-technical club'}{club.mentors?.length ? ` · Mentors: ${club.mentors.map((mentor) => mentor.name).join(', ')}` : club.mentorDirectory?.length ? ` · Mentors: ${club.mentorDirectory.map((mentor) => mentor.name).join(', ')}` : ''}</span>
       {isAdmin ? <button className="text-link club-join" onClick={onEdit}>Edit club details <ArrowRight size={15} /></button> :
         isMember ? <span className="club-applied status status-approved">You’re a member</span> :
@@ -2992,14 +3132,55 @@ function ClubCard({ club, index, application, isMember, onApply, isAdmin, canApp
   </article>;
 }
 
+function ClubDetailsDialog({ club, onClose, onApply, canApply, isMember, application }) {
+  const mentors = club.mentors?.length ? club.mentors : club.mentorDirectory || [];
+  const motto = club.motto || club.tagline || club.mission;
+  useEffect(() => {
+    const closeOnEscape = (event) => {
+      if (event.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [onClose]);
+  return <div className="event-dialog-backdrop" onMouseDown={(event) => {
+    if (event.target === event.currentTarget) onClose();
+  }}>
+    <section className="club-detail-dialog" role="dialog" aria-modal="true" aria-labelledby="club-detail-title">
+      <button className="icon-button club-detail-close" type="button" onClick={onClose} aria-label="Close club details"><X size={18} /></button>
+      <div className="club-detail-insignia">
+        {club.logoUrl ? <img src={club.logoUrl} alt={`${club.name} insignia`} /> : <Compass size={46} aria-hidden="true" />}
+      </div>
+      <div className="club-detail-content">
+        <span className="eyebrow">{club.category || 'Campus community'}</span>
+        <h2 id="club-detail-title">{club.name}</h2>
+        {motto && <p className="club-detail-motto">{motto}</p>}
+        <p>{club.description || 'Club information has not been added yet.'}</p>
+        <dl>
+          <div><dt>Type</dt><dd>{club.clubType === 'technical' ? 'Technical club' : 'Non-technical club'}</dd></div>
+          <div><dt>Mentor{mentors.length === 1 ? '' : 's'}</dt><dd>{mentors.length ? mentors.map((mentor) => mentor.name).join(', ') : 'Not listed'}</dd></div>
+          {club.domains?.length > 0 && <div><dt>Areas</dt><dd>{club.domains.join(', ')}</dd></div>}
+        </dl>
+        {canApply && club.recruitmentOpen && !isMember && application?.status !== 'pending' && (
+          <button className="button button-primary" type="button" onClick={onApply}>
+            {application?.status === 'rejected' ? 'Apply again' : 'Apply to join'}
+          </button>
+        )}
+        {isMember && <span className="status status-approved">You’re a member</span>}
+        {application?.status === 'pending' && <span className="status status-pending">Application pending</span>}
+        {!club.recruitmentOpen && <span className="club-manager-note">Recruitment is currently closed.</span>}
+      </div>
+    </section>
+  </div>;
+}
+
 function ApplicationRow({ application, isOwn, canReview, onReview }) {
-  return <article className={`application-row ${canReview && application.status === 'pending' ? 'notification-needs-attention' : ''}`}><div className="application-avatar">{initials(application.profileId?.name)}</div><div className="application-details"><div className="application-title"><strong>{application.clubId?.name || 'Club application'}</strong><span className={statusClass(application.status)}>{application.status}</span>{canReview && application.status === 'pending' && <span className="notification-inline-label">NEW APPLICATION</span>}</div><p>{isOwn ? 'Your application' : `${application.profileId?.name || 'A student'}${application.profileId?.email ? ` · ${application.profileId.email}` : ''}`}</p><small>Applying for: {application.requestedPosition === 'executive' ? 'Executive consideration' : 'Club membership'}</small>
+  return <article className={`application-row ${canReview && application.status === 'pending' ? 'notification-needs-attention' : ''}`}>  <div className="application-avatar">{initials(application.profileId?.name)}</div><div className="application-details"><div className="application-title"><strong>{application.clubId?.name || 'Club application'}</strong><span className={statusClass(application.status)}>{application.status}</span>{canReview && application.status === 'pending' && <span className="notification-inline-label">NEW APPLICATION</span>}</div><p>{isOwn ? 'Your application' : <>{application.profileId?.name || 'A student'}{application.profileId?.email && <> · <a href={`mailto:${application.profileId.email}`}>{application.profileId.email}</a></>}</>}</p><small>Applying for: {application.requestedPosition === 'executive' ? 'Executive consideration' : 'Club membership'}</small>
     <details className="applicant-details" open={canReview && application.status === 'pending'}><summary>Applicant details</summary><dl>
       <div><dt>Name</dt><dd>{application.profileId?.name || 'Not provided'}</dd></div>
       <div><dt>Roll number</dt><dd>{application.profileId?.registerNumber || 'Not provided'}</dd></div>
       <div><dt>Department</dt><dd>{application.profileId?.department || 'Not provided'}</dd></div>
       <div><dt>Year of study</dt><dd>{application.yearOfStudy || 'Not provided'}</dd></div>
-      <div><dt>Phone</dt><dd>{application.applicantPhone || application.profileId?.phone || 'Not provided'}</dd></div>
+      <div><dt>Phone</dt><dd>{(application.applicantPhone || application.profileId?.phone) ? <a href={`tel:${application.applicantPhone || application.profileId?.phone}`}>{application.applicantPhone || application.profileId?.phone}</a> : 'Not provided'}</dd></div>
       <div><dt>Domain</dt><dd>{application.domain || 'General'}</dd></div>
       <div className="applicant-reason"><dt>Reason for joining</dt><dd>{application.reason || 'Not provided'}</dd></div>
     </dl></details>
@@ -3029,7 +3210,7 @@ function MemberRow({ member, canEdit, canRemove, onRemove, onRoleChange }) {
   useEffect(() => { setOfficeBearerGroup(member.officeBearerGroup); }, [member.officeBearerGroup]);
   return <article className="member-row">
     <span className="application-avatar">{initials(member.profileId?.name)}</span>
-    <span className="member-person"><strong>{member.profileId?.name || 'Campus member'}</strong><small>{member.profileId?.email}</small></span>
+    <span className="member-person"><strong>{member.profileId?.name || 'Campus member'}</strong><small>{member.profileId?.email && <a href={`mailto:${member.profileId.email}`}>{member.profileId.email}</a>}</small></span>
     <span className="member-date">{isEnded ? `Ended ${formatDate(member.endedAt, { month: 'short', day: 'numeric', year: 'numeric' })}` : `Joined ${formatDate(member.joinedDate, { month: 'short', day: 'numeric', year: 'numeric' })}`}</span>
     {isEnded && <span className={statusClass('ended')}>Membership ended</span>}
     {member.membershipStatus === 'pending' && <span className={statusClass('pending')}>Invitation pending</span>}
@@ -3054,8 +3235,43 @@ function EquipmentCard({ equipment, index, isPresident, activeBorrow, onBorrow, 
   return <article className="surface-card equipment-card"><div className={`equipment-art equipment-art-${index % 3}`}><Laptop size={25} /><span className="equipment-condition">{equipment.condition || 'good'} condition</span></div><div className="equipment-card-body"><span className="club-category">{equipment.clubId?.name || 'Club equipment'}</span><h2>{equipment.name}</h2><p>{equipment.description || 'Shared by your campus community.'}</p><div className="equipment-card-bottom"><span className={equipment.availableQuantity ? 'availability' : 'unavailable'}><i />{equipment.availableQuantity} of {equipment.totalQuantity} available</span>{activeBorrow && ['borrowed', 'overdue'].includes(activeBorrow.status) && <button className="button button-outline button-small" onClick={onReturn}>Return item</button>}{isPresident && (!activeBorrow || ['returned', 'rejected'].includes(activeBorrow.status)) && <button className="button button-outline button-small" disabled={!equipment.availableQuantity} onClick={onBorrow}>Request equipment</button>}</div></div></article>;
 }
 
-function FundingRow({ request, canReview, onReview }) {
+function FundingRowDisplay({ request, canReview, onReview }) {
   return <article className={`funding-row ${canReview ? 'notification-needs-attention' : ''}`}><div className="funding-details"><strong>{request.clubId?.name || 'Club funding'}</strong>{request.eventId?.title && <span>For {request.eventId.title}</span>}<small>Applied {formatDate(request.requestDate)}{request.createdBy?.name ? ` · Requested by ${request.createdBy.name}` : ''}</small><span>{request.purpose}</span>{canReview && <small className="notification-inline-label">NEEDS YOUR REVIEW</small>}<ReviewHistory entries={reviewHistoryFor(request)} />{request.rejectionFeedback && <small className="rejection-feedback">Feedback: {request.rejectionFeedback}</small>}</div><div className="funding-actions"><strong>{formatMoney(request.requestedAmount)}</strong><span className={statusClass(request.status)}>{String(request.status).replaceAll('_', ' ')}</span>{canReview && <div className="review-actions"><button className="review-accept" onClick={() => onReview('approved')} aria-label={request.status === 'student_affairs_pending' ? 'Approve funding request as Student Affairs' : 'Approve funding request as mentor'}><Check size={15} /></button><button className="review-decline" onClick={() => onReview('rejected')} aria-label="Decline funding request"><X size={15} /></button></div>}</div></article>;
+}
+
+function FundingRow({ request, canReview, canEdit, onReview, onUpdate, onError }) {
+  const [editing, setEditing] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const editable = request.status === 'mentor_pending' && !mentorReviewStarted(request);
+  const save = async (event) => {
+    event.preventDefault();
+    setBusy(true);
+    const form = new FormData(event.currentTarget);
+    try {
+      await onUpdate({
+        requestedAmount: Number(form.get('requestedAmount')),
+        purpose: form.get('purpose'),
+      });
+      setEditing(false);
+    } catch (error) {
+      onError(error.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+  return <>
+    <FundingRowDisplay request={request} canReview={canReview} onReview={onReview} />
+    {canEdit && <div className="funding-actions">
+      <button className="button button-outline button-small" type="button" disabled={!editable}
+        title={!editable ? 'Editing is disabled after mentor review has started.' : undefined}
+        onClick={() => setEditing(!editing)}>{editing ? 'Cancel edit' : 'Edit request'}</button>
+    </div>}
+    {editing && editable && <form className="modal-form" onSubmit={save}>
+      <label className="field-label">Amount requested (INR)<input name="requestedAmount" type="number" min="1" step="1" defaultValue={request.requestedAmount} required /></label>
+      <label className="field-label">Purpose<textarea name="purpose" maxLength="2000" rows="2" defaultValue={request.purpose} required /></label>
+      <button className="button button-primary" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save changes'}</button>
+    </form>}
+  </>;
 }
 
 function SpendingChart({ transactions }) {
@@ -3093,6 +3309,10 @@ function EmptyState({ title, text }) {
 }
 
 export default function App() {
+  const path = window.location.pathname.replace(/\/+$/, '') || '/';
+  const staticPage = path === '/privacy-policy' ? 'privacy'
+    : path === '/terms-and-conditions' ? 'terms'
+      : path === '/' ? '' : 'notFound';
   const [session, setSession] = useState(undefined);
   const [profile, setProfile] = useState(null);
   const [profileError, setProfileError] = useState('');
@@ -3108,9 +3328,30 @@ export default function App() {
     }
   }, [theme]);
 
+  useEffect(() => {
+    const metadata = {
+      privacy: {
+        title: 'Privacy policy | Amrita Sangam',
+        description: 'Learn what account and campus activity data Amrita Sangam uses and how access is managed.',
+      },
+      terms: {
+        title: 'Terms and conditions | Amrita Sangam',
+        description: 'Read the terms for using the Amrita Sangam campus clubs and events portal.',
+      },
+      notFound: {
+        title: 'Page not found | Amrita Sangam',
+        description: 'The page you requested could not be found.',
+      },
+    }[staticPage];
+    if (!metadata) return;
+    document.title = metadata.title;
+    document.querySelector('meta[name="description"]')?.setAttribute('content', metadata.description);
+  }, [staticPage]);
+
   const toggleTheme = () => setTheme((currentTheme) => currentTheme === 'dark' ? 'light' : 'dark');
 
   useEffect(() => {
+    if (staticPage) return undefined;
     let active = true;
     try {
       clearLegacySupabaseSessions();
@@ -3128,7 +3369,7 @@ export default function App() {
       if (error.status !== 401) setProfileError(error.message);
     });
     return () => { active = false; };
-  }, []);
+  }, [staticPage]);
 
   const userId = session?.user?.id;
   useEffect(() => {
@@ -3160,12 +3401,55 @@ export default function App() {
     }
   };
 
+  if (staticPage) return <PublicPage page={staticPage} />;
   if (session === undefined) return <div className="app-loading"><span className="loading-orbit" /><p>Getting your campus ready…</p></div>;
   if (profileError) {
-    return <div className="profile-error"><div className="config-card"><span className="eyebrow">A CONNECTION ISSUE</span><h1>One more moment.</h1><p>{profileError}</p><button className="button button-primary" onClick={() => window.location.reload()}>Try again <ArrowRight size={16} /></button><button className="text-link" onClick={logout}>Sign out</button></div></div>;
+    return <div className="profile-error"><div className="config-card"><span className="eyebrow">A CONNECTION ISSUE</span><h1>One more moment.</h1><p>{profileError}</p><button className="button button-primary" onClick={() => window.location.reload()}>Try again <ArrowRight size={16} /></button><button className="text-link" onClick={logout}>Sign out</button></div><SiteFooter /></div>;
   }
   if (!session) return <AuthScreen onAuthenticated={setSession} theme={theme} onToggleTheme={toggleTheme} />;
   if (!profile) return <div className="app-loading"><span className="loading-orbit" /><p>Setting up your space…</p></div>;
   if (profile.role === 'icts') return <IctsDashboard onLogout={logout} theme={theme} onToggleTheme={toggleTheme} />;
   return <Dashboard profile={profile} onLogout={logout} onProfileUpdate={setProfile} theme={theme} onToggleTheme={toggleTheme} />;
+}
+
+function PublicPage({ page }) {
+  if (page === 'notFound') {
+    return <main className="public-page"><section className="public-page-card">
+      <span className="eyebrow">404 · PAGE NOT FOUND</span>
+      <h1>This page isn’t here.</h1>
+      <p>The link may be outdated, or the address may have been typed incorrectly.</p>
+      <a className="button button-primary" href="/">Return to Amrita Sangam</a>
+    </section><SiteFooter /></main>;
+  }
+
+  const isPrivacy = page === 'privacy';
+  return <main className="public-page">
+    <article className="public-page-card">
+      <a className="public-page-brand" href="/">Amrita Sangam</a>
+      <span className="eyebrow">CAMPUS COMMUNITY</span>
+      <h1>{isPrivacy ? 'Privacy policy' : 'Terms and conditions'}</h1>
+      {isPrivacy ? <>
+        <p>This policy describes the information used by Amrita Sangam, a campus portal for club membership, events, announcements and related services.</p>
+        <h2>Information used by the portal</h2>
+        <p>Depending on your account and activity, the portal processes your name, institutional email, student or faculty identifiers, department, profile details, club applications, memberships, event registrations, attendance, messages, equipment requests and funding records. Information you submit is used to provide the corresponding campus service.</p>
+        <h2>Storage and access</h2>
+        <p>Authentication is provided through Supabase. Campus profiles and portal records are stored in the campus database. Access to records is restricted by account role so that students, club representatives, mentors and administrators can use only the information needed for their responsibilities.</p>
+        <h2>Shared club accounts</h2>
+        <p>Club accounts are shared credentials. Activity performed through a shared account is associated with that account and may not identify the individual person who used it. Do not use another person’s credentials.</p>
+        <h2>Questions and corrections</h2>
+        <p>For help with account information or this policy, contact the institution’s ICTS support team through its established support channel.</p>
+      </> : <>
+        <p>By signing in to Amrita Sangam, you agree to use the portal for legitimate campus club and event activities and to follow applicable institution policies.</p>
+        <h2>Account responsibilities</h2>
+        <p>Keep your sign-in details secure, provide accurate information and use only accounts assigned to you. Shared club credentials should be used only by authorized club representatives.</p>
+        <h2>Campus services</h2>
+        <p>Club memberships, event proposals, equipment requests and funding requests may require review or approval. Submitting a request does not guarantee approval or availability. Event registrations are final and cannot be cancelled through the portal.</p>
+        <h2>Acceptable use</h2>
+        <p>Do not use the portal to disrupt services, access information without permission, impersonate another person or submit unlawful, misleading or harmful content. The institution may restrict access when needed to protect accounts, records or campus services.</p>
+        <h2>Changes to these terms</h2>
+        <p>These terms may be updated when campus services or institutional requirements change. Continued use after an update means you accept the revised terms.</p>
+      </>}
+      <a className="public-page-back" href="/">Back to Amrita Sangam</a>
+    </article><SiteFooter />
+  </main>;
 }

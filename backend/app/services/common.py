@@ -187,6 +187,16 @@ def review_mentor_assignment(record, profile_id, status, reviewed_at):
     return True, complete
 
 
+def mentor_review_started(record):
+    return bool(
+        record.get("mentorReviewedBy")
+        or any(
+            assignment.get("status") != "pending"
+            for assignment in (record.get("mentorApprovals") or [])
+        )
+    )
+
+
 def is_club_mentor(club, profile_id):
     return str(profile_id) in {str(identity) for identity in club_mentor_ids(club)}
 

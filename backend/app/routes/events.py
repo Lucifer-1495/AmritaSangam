@@ -28,6 +28,7 @@ from ..services.common import (
     is_club_mentor,
     is_student_affairs,
     mentor_approval_assignments,
+    mentor_review_started,
     review_mentor_assignment,
     visible_club_ids,
     build_attendance_roster,
@@ -425,7 +426,10 @@ def edit_event(request: Request, identity: str, body: dict, profile=Depends(curr
     )
     if not is_organizer_review and not is_executive(membership) and not has_verified_club_access(db, event["clubId"], profile):
         raise HTTPException(status_code=403, detail="Only active club executives can edit an event.")
-    if not is_organizer_review and (event.get("status") not in ("draft", "mentor_pending") or event.get("mentorReviewedBy")):
+    if not is_organizer_review and (
+        event.get("status") not in ("draft", "mentor_pending")
+        or mentor_review_started(event)
+    ):
         raise HTTPException(status_code=409, detail="This event can no longer be edited after mentor review.")
     updates = {
         field: body[field]
@@ -557,7 +561,7 @@ def list_registrations(request: Request, eventId: str | None = None, profile=Dep
         if not event:
             raise HTTPException(status_code=404, detail="Event not found.")
         if not can_manage_club(db, event["clubId"], profile):
-            raise HTTPException(status_code=403, detail="Not allowed to view registrations for this event.")
+            require_club_account_for_attendance(event, profile)
         query = {"eventId": event["_id"]}
     registrations = list(collection(db, "registrations").find(query).sort("registrationDate", -1))
     populate_many(db, registrations, [
@@ -569,30 +573,33 @@ def list_registrations(request: Request, eventId: str | None = None, profile=Dep
 
 @router.post("/registrations", status_code=201)
 def register_for_event(request: Request, body: dict, profile=Depends(current_profile)):
+    if profile["role"] != Role.STUDENT.value:
+        raise HTTPException(status_code=403, detail="Only student accounts can register for campus events.")
     require_fields(body, ["eventId"])
     db = request.app.state.db
     event_id = as_oid(body["eventId"], "eventId")
     events = collection(db, "events")
+    registrations = collection(db, "registrations")
+    profile_id = as_oid(profile["_id"])
+    if registrations.find_one({"eventId": event_id, "profileId": profile_id}):
+        raise HTTPException(status_code=409, detail="You have already registered. Event registrations cannot be cancelled or repeated.")
+    event = events.find_one({"_id": event_id, "status": "approved"})
+    if not event:
+        raise HTTPException(status_code=404, detail="Approved event not found.")
+    event_end = parse_date(event.get("endDate") or event["eventDate"])
+    if event_end <= datetime.now(timezone.utc):
+        raise HTTPException(status_code=409, detail="Registration is closed because this event has ended.")
     event = events.find_one_and_update({
         "_id": event_id,
         "status": "approved",
         "$expr": {"$lt": [{"$ifNull": ["$registeredCount", 0]}, "$capacity"]},
     }, {"$inc": {"registeredCount": 1}}, return_document=ReturnDocument.AFTER)
     if not event:
-        approved = events.find_one({"_id": event_id, "status": "approved"}, {"_id": 1})
-        if not approved:
-            raise HTTPException(status_code=404, detail="Approved event not found.")
         raise HTTPException(status_code=409, detail="This event is full.")
-    registrations = collection(db, "registrations")
     try:
-        existing = registrations.find_one_and_update(
-            {"eventId": event_id, "profileId": as_oid(profile["_id"]), "status": "cancelled"},
-            {"$set": {"status": "registered", "registrationDate": datetime.now(timezone.utc), "updatedAt": datetime.now(timezone.utc)}},
-            return_document=ReturnDocument.AFTER,
-        )
-        registration = existing or insert(db, "registrations", {
+        registration = insert(db, "registrations", {
             "eventId": event_id,
-            "profileId": as_oid(profile["_id"]),
+            "profileId": profile_id,
             "status": "registered",
             "registrationDate": datetime.now(timezone.utc),
         })
@@ -607,20 +614,7 @@ def register_for_event(request: Request, body: dict, profile=Depends(current_pro
 
 @router.delete("/registrations/{identity}")
 def cancel_registration(request: Request, identity: str, profile=Depends(current_profile)):
-    db = request.app.state.db
-    registrations = collection(db, "registrations")
-    registration = registrations.find_one_and_update(
-        {"_id": as_oid(identity), "profileId": as_oid(profile["_id"]), "status": "registered"},
-        {"$set": {"status": "cancelled", "updatedAt": datetime.now(timezone.utc)}},
-        return_document=ReturnDocument.AFTER,
-    )
-    if not registration:
-        raise HTTPException(status_code=404, detail="Active registration not found.")
-    collection(db, "events").update_one(
-        {"_id": registration["eventId"], "registeredCount": {"$gt": 0}},
-        {"$inc": {"registeredCount": -1}},
-    )
-    return serialize_document(registration)
+    raise HTTPException(status_code=409, detail="Event registrations cannot be cancelled.")
 
 
 @router.get("/venues")
@@ -802,7 +796,8 @@ def download_roster(request: Request, identity: str, profile=Depends(current_pro
     if profile["role"] != Role.ADMIN.value:
         club = collection(db, "clubs").find_one({"_id": report["clubId"]}, {"mentor": 1, "mentorIds": 1})
         is_mentor = is_club_mentor(club, profile["_id"])
-        if not is_mentor and not can_review_memberships(db, report["clubId"], profile):
+        is_club_account = has_verified_club_access(db, report["clubId"], profile)
+        if not is_mentor and not is_club_account and not can_review_memberships(db, report["clubId"], profile):
             raise HTTPException(status_code=403, detail="You do not have access to this attendance roster.")
     event = collection(db, "events").find_one({"_id": report["eventId"]}, {"title": 1})
     if event:
@@ -877,8 +872,18 @@ def resubmit_event_report(request: Request, identity: str, body: dict, profile=D
     membership = active_membership(db, report["clubId"], profile["_id"])
     if not is_executive(membership) and not has_verified_club_access(db, report["clubId"], profile):
         raise HTTPException(status_code=403, detail="Only active club executives can revise the report.")
-    if report.get("status") != "rejected":
-        raise HTTPException(status_code=409, detail="Only a rejected report can be resubmitted.")
+    club_account = has_verified_club_access(db, report["clubId"], profile)
+    can_edit_before_review = (
+        club_account
+        and report.get("status") == "mentor_pending"
+        and not mentor_review_started(report)
+    )
+    can_resubmit_rejected = (
+        not profile.get("isClubAccount")
+        and report.get("status") == "rejected"
+    )
+    if not can_edit_before_review and not can_resubmit_rejected:
+        raise HTTPException(status_code=409, detail="This report can no longer be edited after mentor review has started.")
     for field in ("summary", "activities", "outcomes", "issues", "budgetSpent"):
         if field in body:
             report[field] = parse_number(body[field], "Budget spent", 0) if field == "budgetSpent" else body[field]
@@ -892,11 +897,12 @@ def resubmit_event_report(request: Request, identity: str, body: dict, profile=D
     if not event:
         raise HTTPException(status_code=404, detail="The event for this report no longer exists.")
     report.update(build_attendance_roster(db, report["eventId"], event["title"]))
-    report["status"] = "mentor_pending"
-    report["mentorApprovals"] = mentor_approval_assignments(db, event)
-    report["rejectionFeedback"] = ""
+    if can_resubmit_rejected:
+        report["status"] = "mentor_pending"
+        report["mentorApprovals"] = mentor_approval_assignments(db, event)
+        report["rejectionFeedback"] = ""
+        for field in ("rejectionStage", "mentorReviewedBy", "studentAffairsReviewedBy"):
+            report.pop(field, None)
     report["updatedAt"] = datetime.now(timezone.utc)
-    for field in ("rejectionStage", "mentorReviewedBy", "studentAffairsReviewedBy"):
-        report.pop(field, None)
     reports.replace_one({"_id": report["_id"]}, report)
     return serialize_document(report)
