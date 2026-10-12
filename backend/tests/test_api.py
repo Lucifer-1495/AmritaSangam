@@ -47,7 +47,26 @@ def client(monkeypatch):
 
 def test_health_and_root_endpoints(client):
     assert client.get("/").json() == {"name": "Amrita Sangam API", "health": "/api/health"}
-    assert client.get("/api/health").json() == {"status": "ok", "database": "connected"}
+    response = client.get("/api/health")
+    assert response.json() == {"status": "ok", "database": "connected"}
+    assert response.headers["X-Content-Type-Options"] == "nosniff"
+    assert response.headers["X-Frame-Options"] == "DENY"
+    assert response.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
+    assert response.headers["Permissions-Policy"] == "camera=(), microphone=(), geolocation=()"
+    assert response.headers["Content-Security-Policy"] == (
+        "default-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+    )
+
+
+def test_security_headers_are_present_on_root_and_https_responses(client):
+    root_response = client.get("/")
+    assert root_response.headers["X-Frame-Options"] == "DENY"
+    assert root_response.headers["Referrer-Policy"] == "strict-origin-when-cross-origin"
+    assert "Content-Security-Policy" not in root_response.headers
+
+    with TestClient(app, base_url="https://testserver") as https_client:
+        https_response = https_client.get("/api/health")
+    assert https_response.headers["Strict-Transport-Security"] == "max-age=15552000; includeSubDomains"
 
 
 def test_health_reports_database_unavailable(client):

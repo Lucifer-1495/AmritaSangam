@@ -767,7 +767,7 @@ body { color: var(--portal-ink); background: var(--portal-canvas); }
     margin: 22px auto 0;
     background: #b50346;
   }
-  .auth-brand .portal-brand-amrita { box-shadow: 0 7px 15px #b5034621; }
+  .auth-brand .portal-brand-amrita { box-shadow: none; }
   .auth-form-side {
     min-height: 0;
     padding: 16px 22px 48px;
@@ -1046,6 +1046,8 @@ html[data-theme="dark"] .auth-story {
 }
 html[data-theme="dark"] .auth-story .story-copy h1 { color: #f0eef6; }
 html[data-theme="dark"] .auth-story .story-copy p { color: #b1afbd; }
+html[data-theme="dark"] .auth-brand .portal-brand-my,
+html[data-theme="dark"] .auth-brand .portal-brand-amrita { color: #f0a6bc; }
 html[data-theme="dark"] .auth-story::before {
   opacity: .2;
   background: repeating-linear-gradient(90deg, transparent 0 16px, #b50346 17px 18px), repeating-linear-gradient(0deg, transparent 0 16px, #b50346 17px 18px);

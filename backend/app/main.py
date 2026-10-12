@@ -18,6 +18,8 @@ from .routes import auth, campus, clubs, events, profiles, public
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logger = logging.getLogger(__name__)
 
+API_CONTENT_SECURITY_POLICY = "default-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -54,21 +56,26 @@ app.add_middleware(
 
 @app.middleware("http")
 async def security_headers(request: Request, call_next):
+    def apply_security_headers(response):
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        if request.url.path.startswith("/api/"):
+            response.headers["Content-Security-Policy"] = API_CONTENT_SECURITY_POLICY
+        if request.url.scheme == "https":
+            response.headers["Strict-Transport-Security"] = "max-age=15552000; includeSubDomains"
+        return response
+
     if request.url.path.startswith("/api/") and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
         if request.headers.get("origin", "").rstrip("/") != settings.client_origin.rstrip("/"):
             response = JSONResponse(status_code=403, content={"error": "Invalid request origin."})
-            response.headers["X-Content-Type-Options"] = "nosniff"
-            if request.url.scheme == "https":
-                response.headers["Strict-Transport-Security"] = "max-age=15552000; includeSubDomains"
-            return response
+            return apply_security_headers(response)
     response = await call_next(request)
-    response.headers["X-Content-Type-Options"] = "nosniff"
     if request.url.path.startswith("/api/auth/"):
         response.headers["Cache-Control"] = "no-store"
         response.headers["Pragma"] = "no-cache"
-    if request.url.scheme == "https":
-        response.headers["Strict-Transport-Security"] = "max-age=15552000; includeSubDomains"
-    return response
+    return apply_security_headers(response)
 
 
 @app.exception_handler(HTTPException)

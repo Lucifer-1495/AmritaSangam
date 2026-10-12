@@ -1042,7 +1042,7 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
     const description = page === 'overview'
       ? 'Manage campus clubs, upcoming events and student services in one place.'
       : pageDescription(page, role) || `Manage ${label.toLowerCase()} in Amrita Sangam.`;
-    document.title = `${label} | Amrita Sangam`;
+    document.title = page === 'overview' ? 'Amrita Sangam' : `${label} | Amrita Sangam`;
     document.querySelector('meta[name="description"]')?.setAttribute('content', description);
   }, [navigation, page, role]);
   const isLeadership = (membership) => membership.membershipStatus === 'active'
