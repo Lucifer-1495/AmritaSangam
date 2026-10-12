@@ -215,7 +215,7 @@ function navigationFor(track) {
     mentor: ['overview', 'clubs', 'events', 'applications', 'members', 'equipment', 'funding', 'eventReports', 'announcements', 'profile'],
     president: ['overview', 'clubs', 'events', 'applications', 'members', 'chats', 'equipment', 'funding', 'reports', 'eventReports', 'announcements', 'profile'],
     'office-bearer': ['overview', 'clubs', 'events', 'applications', 'members', 'chats', 'funding', 'reports', 'eventReports', 'announcements', 'profile'],
-    'verified-office-bearer': ['overview', 'clubs', 'events', 'equipment', 'funding', 'reports', 'eventReports'],
+    'verified-office-bearer': ['overview', 'clubs', 'events', 'applications', 'members', 'equipment', 'funding', 'reports', 'eventReports'],
     executive: ['overview', 'clubs', 'events', 'applications', 'chats', 'announcements', 'profile'],
     student: ['overview', 'clubs', 'events', 'applications', 'announcements', 'profile'],
   }[track];
@@ -226,6 +226,20 @@ function formatDate(value, options = { month: 'short', day: 'numeric', year: 'nu
   if (!value) return 'Date to be announced';
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? 'Date to be announced' : date.toLocaleDateString(undefined, options);
+}
+
+function formatDuration(start, end) {
+  const milliseconds = new Date(end).getTime() - new Date(start).getTime();
+  if (!Number.isFinite(milliseconds) || milliseconds <= 0) return 'Select an end time after the start time.';
+  const totalMinutes = Math.round(milliseconds / 60_000);
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  return [
+    days && `${days} day${days === 1 ? '' : 's'}`,
+    hours && `${hours} hour${hours === 1 ? '' : 's'}`,
+    minutes && `${minutes} minute${minutes === 1 ? '' : 's'}`,
+  ].filter(Boolean).join(', ');
 }
 
 function isUpcomingEvent(event, now = new Date()) {
@@ -453,6 +467,7 @@ function AuthScreen({ onAuthenticated, theme, onToggleTheme }) {
 
 function Modal({ type, clubs, allClubs, eventOrganizers, profiles, venues, events = [], reportEvents = [], equipmentItems = [], selectedEquipment, selectedClub, selectedEvent, profile, onClose, onSubmit, busy }) {
   const isEventForm = type === 'event' || type === 'editEvent';
+  const isAdmin = profile.role === 'college_admin';
   const isStudentAffairs = profile.role === 'college_admin' && profile.adminType === 'student_affairs';
   const availableEventHosts = isStudentAffairs ? eventOrganizers : clubs;
   const availableCoHosts = isStudentAffairs ? [...allClubs, ...eventOrganizers] : allClubs;
@@ -460,7 +475,12 @@ function Modal({ type, clubs, allClubs, eventOrganizers, profiles, venues, event
   const [coHostIds, setCoHostIds] = useState((selectedEvent?.coHostIds || []).map((host) => host?._id || host));
   const [eventType, setEventType] = useState(selectedEvent?.eventType || availableEventHosts.find((host) => host._id === (selectedEvent?.clubId?._id || selectedEvent?.clubId || availableEventHosts[0]?._id))?.clubType || 'non_technical');
   const [reportEventId, setReportEventId] = useState(reportEvents[0]?._id || '');
-  const [borrowEquipmentId, setBorrowEquipmentId] = useState(selectedEquipment?._id || '');
+  const [borrowItems, setBorrowItems] = useState(() => selectedEquipment?._id
+    ? [{ equipmentId: selectedEquipment._id, quantity: 1 }]
+    : []);
+  const [borrowClubId, setBorrowClubId] = useState(profile.verifiedClubId || clubs[0]?._id || '');
+  const [borrowStartTime, setBorrowStartTime] = useState(() => toDateTimeInput(new Date(Date.now() + 5 * 60 * 1000)));
+  const [borrowEndTime, setBorrowEndTime] = useState(() => toDateTimeInput(new Date(Date.now() + 7 * 86400000)));
   const [requestEventId, setRequestEventId] = useState('');
   const [formError, setFormError] = useState('');
   const [logoPreview, setLogoPreview] = useState(selectedClub?.logoUrl || '');
@@ -476,17 +496,21 @@ function Modal({ type, clubs, allClubs, eventOrganizers, profiles, venues, event
   const [selectedMentorIds, setSelectedMentorIds] = useState(
     (selectedClub?.mentorIds || []).map((identity) => String(identity?._id || identity)),
   );
+  useEffect(() => {
+    if (type === 'borrow') {
+      setBorrowItems(selectedEquipment?._id ? [{ equipmentId: selectedEquipment._id, quantity: 1 }] : []);
+    }
+  }, [selectedEquipment?._id, type]);
   const mentorPickerRef = useRef(null);
   const applicationClub = clubs.find((club) => club._id === clubId);
   const selectedHost = availableEventHosts.find((host) => host._id === clubId);
   const requestClubId = type === 'borrow'
-    ? String(equipmentItems.find((item) => item._id === borrowEquipmentId)?.clubId?._id || equipmentItems.find((item) => item._id === borrowEquipmentId)?.clubId || '')
+    ? String(borrowClubId)
     : clubId;
   const requestEvents = events.filter((item) =>
     String(item.clubId?._id || item.clubId) === String(requestClubId)
     || item.coHostIds?.some((host) => String(host?._id || host) === String(requestClubId)));
   const defaultStartTime = toDateTimeInput(new Date(Date.now() + 5 * 60 * 1000));
-  const defaultEndTime = toDateTimeInput(new Date(Date.now() + 7 * 86400000));
   const facultyMentors = profiles.filter((person) => person.role === 'faculty_coordinator');
   const filteredMentors = facultyMentors.filter((person) =>
     `${person.name} ${person.facultyId || ''} ${person.email || ''}`.toLowerCase().includes(mentorSearch.trim().toLowerCase()),
@@ -564,18 +588,25 @@ function Modal({ type, clubs, allClubs, eventOrganizers, profiles, venues, event
         values.reportDetails = buildReportDetails(formData, reportImages);
       }
       if (type === 'borrow') {
-        const equipment = equipmentItems.find((item) => item._id === borrowEquipmentId);
-        if (!equipment) throw new Error('Choose an available piece of equipment.');
-        values.equipmentId = equipment._id;
-        values.clubId = equipment.clubId?._id || equipment.clubId;
-        values.quantity = Number(values.quantity);
+        if (!borrowItems.length) throw new Error('Select at least one available equipment item.');
+        values.items = borrowItems.map(({ equipmentId, quantity }) => ({
+          equipmentId,
+          quantity: Number(quantity),
+        }));
+        values.clubId = requestClubId;
         values.startDate = new Date(values.startDate).toISOString();
         values.endDate = new Date(values.endDate).toISOString();
         values.dueDate = values.endDate;
         if (requestEventId) values.eventId = requestEventId;
       }
       if (type === 'funding') values.eventId = requestEventId;
-      const submitValues = ['borrow', 'eventReport'].includes(type) ? values : { ...values, clubId, coHostIds };
+      if (type === 'editEquipment'
+        && !window.confirm(`Save these changes to ${selectedEquipment.name}? Choose OK to save or Cancel to keep the current item.`)) {
+        return;
+      }
+      const submitValues = ['borrow', 'eventReport', 'equipment', 'editEquipment'].includes(type)
+        ? values
+        : { ...values, clubId, coHostIds };
       const result = await onSubmit(type, submitValues, type === 'eventReport' ? reportEventId : selectedEvent);
       if (result) setFormError(result);
     } catch (error) {
@@ -619,7 +650,8 @@ function Modal({ type, clubs, allClubs, eventOrganizers, profiles, venues, event
     eventReport: 'Create event report',
     borrow: 'Request equipment',
     announcement: 'Share an announcement',
-    equipment: 'Add club equipment',
+    equipment: 'Add campus equipment',
+    editEquipment: 'Edit campus equipment',
     funding: 'Request funding',
     budget: 'Set a club budget',
     transaction: 'Record a transaction',
@@ -637,7 +669,8 @@ function Modal({ type, clubs, allClubs, eventOrganizers, profiles, venues, event
         </div>
         <form className="modal-form" onSubmit={submit}>
           {type === 'apply' && <p className="modal-intro">Tell the club a little about what brings you here.</p>}
-          {type !== 'club' && type !== 'editClub' && !isEventForm && type !== 'eventReport' && type !== 'borrow' && (
+          {type !== 'club' && type !== 'editClub' && !isEventForm && type !== 'eventReport' && type !== 'borrow'
+            && !(['equipment', 'editEquipment'].includes(type) && isAdmin) && (
             <label className="field-label">Club
               <select name="clubId" value={clubId} onChange={(event) => { setClubId(event.target.value); setRequestEventId(''); }} required>
                 {clubs.map((club) => <option value={club._id} key={club._id}>{club.name}{club.clubType ? ` · ${club.clubType.replace('_', ' ')}` : ''}</option>)}
@@ -797,12 +830,31 @@ function Modal({ type, clubs, allClubs, eventOrganizers, profiles, venues, event
             </fieldset>}
           </>}
           {type === 'borrow' && <>
-            <label className="field-label">Equipment<select value={borrowEquipmentId} onChange={(event) => { setBorrowEquipmentId(event.target.value); setRequestEventId(''); }} required><option value="" disabled>Select equipment</option>{equipmentItems.map((item) => <option key={item._id} value={item._id}>{item.name} · {item.clubId?.name || 'Club'} ({item.availableQuantity} available)</option>)}</select></label>
-            <label className="field-label">Quantity<input name="quantity" type="number" min="1" max={equipmentItems.find((item) => item._id === borrowEquipmentId)?.availableQuantity || 1} step="1" defaultValue="1" required /></label>
+            {!equipmentItems.length && <div className="notice notice-error" role="status">There is no equipment currently listed in the campus catalogue. Ask an administrator to add inventory, then submit your request.</div>}
+            {clubs.length > 1 && <label className="field-label">Requesting club<select value={borrowClubId} onChange={(event) => { setBorrowClubId(event.target.value); setRequestEventId(''); }} required><option value="" disabled>Select a club</option>{clubs.map((club) => <option key={club._id} value={club._id}>{club.name}</option>)}</select></label>}
+            <fieldset className="equipment-request-picker">
+              <legend>Select equipment and quantities</legend>
+              {equipmentItems.map((item) => {
+                const selectedItem = borrowItems.find((entry) => entry.equipmentId === item._id);
+                return <div className="equipment-request-choice" key={item._id}>
+                  <label><input type="checkbox" checked={Boolean(selectedItem)} onChange={(event) => {
+                    setBorrowItems((current) => event.target.checked
+                      ? [...current, { equipmentId: item._id, quantity: 1 }]
+                      : current.filter((entry) => entry.equipmentId !== item._id));
+                  }} />{item.name} · {item.availableQuantity} available</label>
+                  {selectedItem && <label className="equipment-request-quantity">Quantity<input type="number" min="1" max={item.availableQuantity} step="1" value={selectedItem.quantity} onChange={(event) => setBorrowItems((current) => current.map((entry) => entry.equipmentId === item._id
+                    ? { ...entry, quantity: event.target.value }
+                    : entry))} required /></label>}
+                </div>;
+              })}
+              {!borrowItems.length && <small>Select one or more catalogue items to request together.</small>}
+            </fieldset>
             <div className="form-row">
-              <label className="field-label">Needed from<input name="startDate" type="datetime-local" min={defaultStartTime} defaultValue={defaultStartTime} required /></label>
-              <label className="field-label">Needed until<input name="endDate" type="datetime-local" min={defaultStartTime} defaultValue={defaultEndTime} required /></label>
+              <label className="field-label">Needed from<input name="startDate" type="datetime-local" min={defaultStartTime} value={borrowStartTime} onChange={(event) => setBorrowStartTime(event.target.value)} required /></label>
+              <label className="field-label">Needed until<input name="endDate" type="datetime-local" min={borrowStartTime || defaultStartTime} value={borrowEndTime} onChange={(event) => setBorrowEndTime(event.target.value)} required /></label>
             </div>
+            <p className="muted-copy" aria-live="polite">Duration: {formatDuration(borrowStartTime, borrowEndTime)}</p>
+            <label className="field-label">Where will it be used?<input name="location" maxLength="200" placeholder="Building, room, or campus location" required /></label>
             {requestEvents.length > 0 && <label className="field-label">Related event (optional)<select value={requestEventId} onChange={(event) => setRequestEventId(event.target.value)}><option value="">No event selected</option>{requestEvents.map((item) => <option key={item._id} value={item._id}>{item.title} · {formatDate(item.eventDate)}</option>)}</select></label>}
             <label className="field-label">Reason for request<textarea name="purpose" maxLength="1000" rows="3" placeholder="Explain how the equipment will be used." required /></label>
             <p className="muted-copy">Your faculty mentor reviews this request first, followed by Student Affairs.</p>
@@ -817,12 +869,13 @@ function Modal({ type, clubs, allClubs, eventOrganizers, profiles, venues, event
             <label className="field-label">Message<textarea name="content" required maxLength={3000} rows="4" placeholder="Share the details with your community…" /></label>
             <label className="field-label">Priority<select name="priority"><option value="normal">Normal</option><option value="high">Important</option><option value="low">Low-key</option></select></label>
           </>}
-          {type === 'equipment' && <>
-            <label className="field-label">Equipment name<input name="name" required maxLength={120} placeholder="e.g. Camera tripod" /></label>
-            <label className="field-label">Description<input name="description" maxLength={1000} placeholder="Optional details" /></label>
+          {['equipment', 'editEquipment'].includes(type) && <>
+            {isAdmin && <p className="modal-intro">Equipment remains part of campus inventory. An approved request assigns it to a club for the requested time.</p>}
+            <label className="field-label">Equipment name<input name="name" required maxLength={120} defaultValue={selectedEquipment?.name || ''} placeholder="e.g. Camera tripod" /></label>
+            <label className="field-label">Description<input name="description" maxLength={1000} defaultValue={selectedEquipment?.description || ''} placeholder="Optional details" /></label>
             <div className="form-row">
-              <label className="field-label">Quantity<input name="totalQuantity" type="number" min="1" defaultValue="1" required /></label>
-              <label className="field-label">Condition<select name="condition"><option value="good">Good</option><option value="new">New</option><option value="fair">Fair</option><option value="poor">Needs care</option></select></label>
+              <label className="field-label">Total quantity<input name="totalQuantity" type="number" min="1" step="1" defaultValue={selectedEquipment?.totalQuantity || 1} required />{type === 'editEquipment' && <small>{selectedEquipment.totalQuantity - selectedEquipment.availableQuantity} currently borrowed</small>}</label>
+              <label className="field-label">Condition<select name="condition" defaultValue={selectedEquipment?.condition || 'good'}><option value="good">Good</option><option value="new">New</option><option value="fair">Fair</option><option value="poor">Needs care</option></select></label>
             </div>
           </>}
           {type === 'funding' && <>
@@ -833,8 +886,8 @@ function Modal({ type, clubs, allClubs, eventOrganizers, profiles, venues, event
           {formError && <div className="notice notice-error" role="alert">{formError}</div>}
           <div className="modal-actions">
             <button className="button button-quiet" type="button" onClick={onClose}>Cancel</button>
-            <button className="button button-primary" type="submit" disabled={busy || checkingAvailability || (!clubs.length && !isClubForm) || (isEventForm && eventEnd && new Date(eventEnd) <= new Date(eventStart))}>
-              {busy ? 'Saving…' : type === 'apply' ? 'Send application' : type === 'funding' ? 'Send request' : type === 'editEvent' ? 'Save event' : 'Save'}
+            <button className="button button-primary" type="submit" disabled={busy || checkingAvailability || (type === 'borrow' && (!equipmentItems.length || !borrowItems.length)) || (!clubs.length && !isClubForm) || (isEventForm && eventEnd && new Date(eventEnd) <= new Date(eventStart))}>
+              {busy ? 'Saving…' : type === 'apply' ? 'Send application' : type === 'funding' ? 'Send request' : type === 'editEvent' || type === 'editEquipment' ? 'Save changes' : 'Save'}
               {!busy && <ArrowRight size={16} />}
             </button>
           </div>
@@ -1342,6 +1395,8 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
         values.recruitmentOpen = values.recruitmentOpen === 'true';
       } else if (type === 'club') {
         values.recruitmentOpen = values.recruitmentOpen === 'true';
+      } else if (['equipment', 'editEquipment'].includes(type) && profile.role === 'college_admin') {
+        values.scope = 'campus';
       }
       const routes = {
         apply: '/applications',
@@ -1356,6 +1411,8 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
       };
       const request = type === 'eventReport'
         ? api(`/events/${eventToEdit}/report`, { method: 'POST', body: values })
+        : type === 'editEquipment'
+          ? api(`/equipment/${selectedEquipment._id}`, { method: 'PATCH', body: values })
         : type === 'editClub'
         ? api(`/clubs/${selectedClub._id}`, { method: 'PATCH', body: values })
         : type === 'editEvent'
@@ -1365,7 +1422,7 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
       setModal('');
       setEditingEvent(null);
       setSelectedEquipment(null);
-      setToast(type === 'apply' ? 'Your application is on its way.' : type === 'editEvent' ? 'Event details updated.' : 'Saved. The right people are in the loop.');
+      setToast(type === 'apply' ? 'Your application is on its way.' : type === 'editEvent' ? 'Event details updated.' : type === 'editEquipment' ? 'Campus equipment updated.' : type === 'borrow' ? `${values.items.length} equipment request${values.items.length === 1 ? '' : 's'} sent for mentor review.` : 'Saved. The right people are in the loop.');
       await refresh();
       return '';
     } catch (error) {
@@ -1558,13 +1615,29 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
       && (isLeadership(membership)
         || (hasVerifiedClubAccess && String(profile.verifiedClubId) === clubId && isOfficeBearerPosition(membership))));
   });
+  const equipmentRequestClubIds = new Set(data.memberships
+    .filter((membership) => isLeadership(membership)
+      || (hasVerifiedClubAccess
+        && String(membership.clubId?._id || membership.clubId) === String(profile.verifiedClubId)
+        && isOfficeBearerPosition(membership)))
+    .map((membership) => String(membership.clubId?._id || membership.clubId)));
+  if (profile.isClubAccount && profile.verifiedClubId) equipmentRequestClubIds.add(String(profile.verifiedClubId));
+  const equipmentRequestClubs = [...new Map([...data.managedClubs, ...data.clubs]
+    .filter((club) => equipmentRequestClubIds.has(String(club._id)))
+    .map((club) => [String(club._id), club])).values()];
+  if (profile.isClubAccount && profile.verifiedClubId
+    && !equipmentRequestClubs.some((club) => String(club._id) === String(profile.verifiedClubId))) {
+    equipmentRequestClubs.push(verifiedClub || {
+      _id: String(profile.verifiedClubId),
+      name: verifiedClubName,
+    });
+  }
   const borrowableEquipment = data.equipment.filter((item) => {
-    const clubId = String(item.clubId?._id || item.clubId);
-    return item.availableQuantity > 0
-      && ((profile.isClubAccount && String(profile.verifiedClubId) === clubId)
-        || data.memberships.some((membership) => String(membership.clubId?._id || membership.clubId) === clubId
-          && (isLeadership(membership)
-            || (hasVerifiedClubAccess && String(profile.verifiedClubId) === clubId && isOfficeBearerPosition(membership)))));
+    const itemClubId = String(item.clubId?._id || item.clubId || '');
+    const canRequestForClub = (requestClubId) => equipmentRequestClubIds.has(String(requestClubId));
+    return item.availableQuantity > 0 && (item.scope === 'campus'
+      ? equipmentRequestClubIds.size > 0
+      : canRequestForClub(itemClubId));
   });
 
   const pageAction = () => {
@@ -1572,7 +1645,8 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
     if (page === 'events' && (eventClubList.length || isStudentAffairs)) return <button className="button button-primary" onClick={() => setModal('event')}><Plus size={16} /> {isStudentAffairs ? 'Create campus event' : 'Propose event'}</button>;
     if (page === 'eventReports' && reportableEvents.length) return <button className="button button-primary" onClick={() => setModal('eventReport')}><Plus size={16} /> Create report</button>;
     if (page === 'announcements' && canPublishAnnouncement) return <button className="button button-primary" onClick={() => setModal('announcement')}><Plus size={16} /> New announcement</button>;
-    if (page === 'equipment' && canManage) return <button className="button button-primary" onClick={() => setModal('equipment')}><Plus size={16} /> Add equipment</button>;
+    if (page === 'equipment' && equipmentRequestClubIds.size > 0) return <button className="button button-primary" onClick={() => { setSelectedEquipment(null); setModal('borrow'); }}><Plus size={16} /> Request equipment</button>;
+    if (page === 'equipment' && role === 'college_admin') return <button className="button button-primary" onClick={() => setModal('equipment')}><Plus size={16} /> Add equipment</button>;
     if (page === 'funding' && role === 'college_admin') return <div className="heading-button-group"><button className="button button-outline" onClick={() => setModal('budget')}><Plus size={15} /> Set budget</button><button className="button button-outline" onClick={() => setModal('transaction')}><Plus size={15} /> Record transaction</button><button className="button button-primary" onClick={() => setModal('funding')}><Plus size={15} /> New request</button></div>;
     if (page === 'funding' && (canManage || hasVerifiedClubAccess)) return <button className="button button-primary" onClick={() => setModal('funding')}><Plus size={16} /> New request</button>;
     if (page === 'reports' && (role !== 'student' || hasVerifiedClubAccess)) return <button className="button button-outline" onClick={downloadClubReport}><Download size={15} /> Export CSV</button>;
@@ -1910,28 +1984,37 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
 
           {!problem && page === 'equipment' && (
             <>
-              <div className="resource-grid">
+              {!profile.isClubAccount && <div className="resource-grid">
                 {data.equipment.map((item, index) => {
                   const clubId = item.clubId?._id || item.clubId;
                   const activeBorrow = data.borrows.find((borrow) => borrow.equipmentId?._id === item._id
-                    && (String(borrow.profileId?._id || borrow.profileId) === String(profile._id)
-                      || (profile.isClubAccount && String(borrow.clubId?._id || borrow.clubId) === String(profile.verifiedClubId))));
-                  const canRequestEquipment = Boolean(profile.isClubAccount && String(clubId) === String(profile.verifiedClubId))
-                    || data.memberships.some((membership) =>
-                    (membership.clubId?._id || membership.clubId) === clubId
-                    && (isLeadership(membership)
-                      || (hasVerifiedClubAccess
-                        && String(clubId) === String(profile.verifiedClubId)
-                        && isOfficeBearerPosition(membership))));
-                  return <EquipmentCard key={item._id} equipment={item} index={index} isPresident={canRequestEquipment} activeBorrow={activeBorrow} onBorrow={() => { setSelectedEquipment(item); setModal('borrow'); }} onReturn={() => perform(() => api(`/equipment-borrows/${activeBorrow._id}/return`, { method: 'PATCH' }), 'Thanks for bringing it back.') } />;
+                    && equipmentRequestClubIds.has(String(borrow.clubId?._id || borrow.clubId)));
+                  const canRequestEquipment = item.scope === 'campus'
+                    ? equipmentRequestClubIds.size > 0
+                    : equipmentRequestClubIds.has(String(clubId));
+                  return <EquipmentCard key={item._id} equipment={item} index={index} canRequestEquipment={canRequestEquipment} activeBorrow={activeBorrow}
+                    canManageCampusInventory={role === 'college_admin'}
+                    onEdit={() => { setSelectedEquipment(item); setModal('editEquipment'); }}
+                    onRemove={() => {
+                      if (window.confirm(`Delete ${item.name} from the campus catalogue? It will be archived so existing loan history is preserved.`)) {
+                        perform(() => api(`/equipment/${item._id}`, { method: 'DELETE' }), 'Equipment removed from the shared catalogue.');
+                      }
+                    }}
+                    onBorrow={() => { setSelectedEquipment(item); setModal('borrow'); }}
+                    onReturn={() => perform(() => api(`/equipment-borrows/${activeBorrow._id}/return`, { method: 'PATCH' }), 'Thanks for bringing it back.')} />;
                 })}
-                {!data.equipment.length && <EmptyState title="Nothing in the loan cupboard yet" text="Club equipment will be listed here when it’s available." />}
-              </div>
-              {data.borrows.some((borrow) => ['mentor_pending', 'student_affairs_pending'].includes(borrow.status))
-                || (profile.isClubAccount && data.borrows.length > 0) ? <section className="surface-card list-surface workflow-list">
-              <SectionHeading title={profile.isClubAccount ? 'Equipment requests' : 'Equipment approvals'} subtitle="Requests move from the club mentor to Student Affairs." />
+                {!data.equipment.length && <div className="surface-card equipment-empty-state"><EmptyState title="No equipment in the campus catalogue yet" text="Campus equipment added by an administrator will appear here for clubs to request." />{equipmentRequestClubIds.size > 0 && <button className="button button-outline" type="button" onClick={() => { setSelectedEquipment(null); setModal('borrow'); }}>Request equipment</button>}</div>}
+              </div>}
+              {profile.isClubAccount || data.borrows.some((borrow) => ['mentor_pending', 'student_affairs_pending'].includes(borrow.status)
+                || (['borrowed', 'overdue'].includes(borrow.status)
+                  && (isStudentAffairs || String(borrow.profileId?._id || borrow.profileId) === String(profile._id)
+                    || (profile.isClubAccount && String(borrow.clubId?._id || borrow.clubId) === String(profile.verifiedClubId))))) ? <section className="surface-card list-surface workflow-list">
+              <SectionHeading title={profile.isClubAccount ? 'Equipment request status' : 'Equipment approvals'} subtitle="Requests move from the club mentor to Student Affairs." />
               {data.borrows.filter((borrow) =>
                 ['mentor_pending', 'student_affairs_pending'].includes(borrow.status)
+                || (['borrowed', 'overdue'].includes(borrow.status)
+                  && (isStudentAffairs || String(borrow.profileId?._id || borrow.profileId) === String(profile._id)
+                    || (profile.isClubAccount && String(borrow.clubId?._id || borrow.clubId) === String(profile.verifiedClubId))))
                 || (profile.isClubAccount
                   && String(borrow.clubId?._id || borrow.clubId) === String(profile.verifiedClubId))).map((borrow) => {
                 const mentorReview = borrow.status === 'mentor_pending' && role === 'faculty_coordinator'
@@ -1939,12 +2022,19 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
                 const affairsReview = borrow.status === 'student_affairs_pending' && isStudentAffairs;
                 const clubRequest = profile.isClubAccount
                   && String(borrow.clubId?._id || borrow.clubId) === String(profile.verifiedClubId);
+                const canReturn = ['borrowed', 'overdue'].includes(borrow.status)
+                  && (isStudentAffairs || clubRequest || String(borrow.profileId?._id || borrow.profileId) === String(profile._id));
                 return <BorrowApprovalRow key={borrow._id} borrow={borrow} canReview={mentorReview || affairsReview}
                   canEdit={clubRequest}
+                  canReturn={canReturn}
                   onUpdate={(values) => api(`/equipment-borrows/${borrow._id}`, { method: 'PATCH', body: values }).then(refresh)}
+                  onReturn={() => perform(() => api(`/equipment-borrows/${borrow._id}/return`, { method: 'PATCH' }), 'Thanks for bringing it back.')}
                   onError={setToast}
                   onReview={(status) => review('borrow', borrow, status)} />;
               })}
+              {profile.isClubAccount && !data.borrows.some((borrow) =>
+                String(borrow.clubId?._id || borrow.clubId) === String(profile.verifiedClubId))
+                && <EmptyState title="No equipment requests yet" text="Requests you submit from the form will appear here with their approval status." />}
               </section> : null}
             </>
           )}
@@ -2073,7 +2163,7 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
       />}
       {modal && modal !== 'clubDetails' && <Modal
         type={modal}
-        clubs={modal === 'apply' ? data.clubs : ['event', 'editEvent'].includes(modal) ? (isStudentAffairs ? data.clubs : eventClubList) : memberClubList}
+        clubs={modal === 'apply' ? data.clubs : ['event', 'editEvent'].includes(modal) ? (isStudentAffairs ? data.clubs : eventClubList) : modal === 'borrow' ? equipmentRequestClubs : memberClubList}
         allClubs={data.clubs}
         eventOrganizers={data.eventOrganizers}
         profiles={data.profiles}
@@ -2081,7 +2171,7 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
         reportEvents={reportableEvents}
         equipmentItems={borrowableEquipment}
         events={eventDialogEvents}
-        selectedEquipment={modal === 'borrow' ? selectedEquipment : null}
+        selectedEquipment={['borrow', 'editEquipment'].includes(modal) ? selectedEquipment : null}
         profile={profile}
         selectedClub={modal === 'club' ? null : modal === 'apply' || modal === 'editClub' ? selectedClub : ['event', 'editEvent'].includes(modal) ? eventClubList[0] : memberClubList[0]}
         selectedEvent={modal === 'editEvent' ? editingEvent : null}
@@ -2990,7 +3080,7 @@ function EventReportSummary({ details }) {
   </details>;
 }
 
-function BorrowApprovalRow({ borrow, canReview, canEdit, onReview, onUpdate, onError }) {
+function BorrowApprovalRow({ borrow, canReview, canEdit, canReturn, onReview, onUpdate, onReturn, onError }) {
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
   const editable = borrow.status === 'mentor_pending' && !mentorReviewStarted(borrow);
@@ -3017,14 +3107,15 @@ function BorrowApprovalRow({ borrow, canReview, canEdit, onReview, onUpdate, onE
   const requestedEnd = borrow.endDate || borrow.dueDate;
   return <article className="funding-row">
     <div className="funding-symbol"><Laptop size={17} /></div>
-    <div className="funding-details"><strong>{borrow.equipmentId?.name || 'Equipment request'} · {borrow.clubId?.name}</strong><span>Quantity: {borrow.quantity || 1}{borrow.eventId?.title ? ` · For ${borrow.eventId.title}` : ''}</span><span>Requested by {borrow.profileId?.name || 'club president'} · {formatDate(requestedStart, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })} to {formatDate(requestedEnd, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })}</span>{borrow.purpose && <span>Reason: {borrow.purpose}</span>}<ReviewHistory entries={reviewHistoryFor(borrow)} />{borrow.rejectionFeedback && <small className="rejection-feedback">Feedback: {borrow.rejectionFeedback}</small>}</div>
-    <div className="funding-actions"><span className={statusClass(borrow.status)}>{borrow.status.replaceAll('_', ' ')}</span>{canEdit && <button className="button button-outline button-small" type="button" disabled={!editable} title={!editable ? 'Editing is disabled after mentor review has started.' : undefined} onClick={() => setEditing(!editing)}>{editing ? 'Cancel edit' : 'Edit request'}</button>}{canReview && <div className="review-actions"><button className="review-accept" onClick={() => onReview('approved')} aria-label="Approve equipment request"><Check size={15} /></button><button className="review-decline" onClick={() => onReview('rejected')} aria-label="Reject equipment request"><X size={15} /></button></div>}</div>
+    <div className="funding-details"><strong>{borrow.equipmentId?.name || 'Equipment request'} · {borrow.clubId?.name}</strong><span>Quantity: {borrow.quantity || 1}{borrow.eventId?.title ? ` · For ${borrow.eventId.title}` : ''}</span><span>Requested by {borrow.profileId?.name || 'club president'} · {formatDate(requestedStart, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })} to {formatDate(requestedEnd, { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' })} · {formatDuration(requestedStart, requestedEnd)}</span>{borrow.location && <span>Location: {borrow.location}</span>}{borrow.purpose && <span>Reason: {borrow.purpose}</span>}<ReviewHistory entries={reviewHistoryFor(borrow)} />{borrow.rejectionFeedback && <small className="rejection-feedback">Feedback: {borrow.rejectionFeedback}</small>}</div>
+    <div className="funding-actions"><span className={statusClass(borrow.status)}>{borrow.status.replaceAll('_', ' ')}</span>{canReturn && <button className="button button-outline button-small" type="button" onClick={onReturn}>Return item</button>}{canEdit && <button className="button button-outline button-small" type="button" disabled={!editable} title={!editable ? 'Editing is disabled after mentor review has started.' : undefined} onClick={() => setEditing(!editing)}>{editing ? 'Cancel edit' : 'Edit request'}</button>}{canReview && <div className="review-actions"><button className="review-accept" onClick={() => onReview('approved')} aria-label="Approve equipment request"><Check size={15} /></button><button className="review-decline" onClick={() => onReview('rejected')} aria-label="Reject equipment request"><X size={15} /></button></div>}</div>
     {editing && editable && <form className="modal-form" onSubmit={save}>
       <label className="field-label">Quantity<input name="quantity" type="number" min="1" max={borrow.equipmentId?.availableQuantity || borrow.quantity || 1} defaultValue={borrow.quantity || 1} required /></label>
       <div className="form-row">
         <label className="field-label">Needed from<input name="startDate" type="datetime-local" min={toDateTimeInput(new Date(Date.now() + 5 * 60 * 1000))} defaultValue={toDateTimeInput(requestedStart)} required /></label>
         <label className="field-label">Needed until<input name="endDate" type="datetime-local" min={toDateTimeInput(requestedStart)} defaultValue={toDateTimeInput(requestedEnd)} required /></label>
       </div>
+      <label className="field-label">Where will it be used?<input name="location" maxLength="200" defaultValue={borrow.location || ''} required /></label>
       <label className="field-label">Reason for request<textarea name="purpose" maxLength="1000" rows="2" defaultValue={borrow.purpose || ''} required /></label>
       <button className="button button-primary" type="submit" disabled={busy}>{busy ? 'Saving…' : 'Save changes'}</button>
     </form>}
@@ -3231,8 +3322,8 @@ function ParticipationRow({ record }) {
   return <article className="participation-row"><span className="participation-mark"><Check size={15} /></span><div><strong>{record.eventId?.title || 'Campus event'}</strong><small>{record.eventId?.clubId?.name || 'Campus community'} · {formatDate(record.eventId?.eventDate)}</small></div><span className={statusClass(record.status)}>{record.status}</span></article>;
 }
 
-function EquipmentCard({ equipment, index, isPresident, activeBorrow, onBorrow, onReturn }) {
-  return <article className="surface-card equipment-card"><div className={`equipment-art equipment-art-${index % 3}`}><Laptop size={25} /><span className="equipment-condition">{equipment.condition || 'good'} condition</span></div><div className="equipment-card-body"><span className="club-category">{equipment.clubId?.name || 'Club equipment'}</span><h2>{equipment.name}</h2><p>{equipment.description || 'Shared by your campus community.'}</p><div className="equipment-card-bottom"><span className={equipment.availableQuantity ? 'availability' : 'unavailable'}><i />{equipment.availableQuantity} of {equipment.totalQuantity} available</span>{activeBorrow && ['borrowed', 'overdue'].includes(activeBorrow.status) && <button className="button button-outline button-small" onClick={onReturn}>Return item</button>}{isPresident && (!activeBorrow || ['returned', 'rejected'].includes(activeBorrow.status)) && <button className="button button-outline button-small" disabled={!equipment.availableQuantity} onClick={onBorrow}>Request equipment</button>}</div></div></article>;
+function EquipmentCard({ equipment, index, canRequestEquipment, activeBorrow, canManageCampusInventory, onEdit, onRemove, onBorrow, onReturn }) {
+  return <article className="surface-card equipment-card"><div className={`equipment-art equipment-art-${index % 3}`}><Laptop size={25} /><span className="equipment-condition">{equipment.condition || 'good'} condition</span></div><div className="equipment-card-body"><span className="club-category">Campus inventory</span><h2>{equipment.name}</h2><p>{equipment.description || 'Shared by your campus community.'}</p><div className="equipment-card-bottom"><span className={equipment.availableQuantity ? 'availability' : 'unavailable'}><i />{equipment.availableQuantity} of {equipment.totalQuantity} available</span>{activeBorrow && ['borrowed', 'overdue'].includes(activeBorrow.status) && <button className="button button-outline button-small" onClick={onReturn}>Return item</button>}{canRequestEquipment && equipment.availableQuantity > 0 && <button className="button button-outline button-small" type="button" onClick={onBorrow}>Request equipment</button>}</div>{canManageCampusInventory && <div className="equipment-management-actions"><button className="button button-outline button-small" type="button" onClick={onEdit}>Edit</button><button className="button button-danger button-small" type="button" onClick={onRemove}>Delete</button></div>}</div></article>;
 }
 
 function FundingRowDisplay({ request, canReview, onReview }) {

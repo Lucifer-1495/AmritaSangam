@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pymongo import ReturnDocument
+from pymongo.errors import DuplicateKeyError
 
 from ..auth import current_profile
 from ..database import serialize_document
@@ -212,11 +213,33 @@ def review_funding_request(request: Request, identity: str, body: dict, profile=
     elif rejected:
         updates["studentAffairsReviewedBy"] = as_oid(profile["_id"])
         updates["rejectionStage"] = "student_affairs"
-    else:
+    created_budget_id = None
+    budget = None
+    if affairs_review and not rejected:
         budget = collection(db, "budgets").find({"clubId": pending["clubId"]}).sort("academicYear", -1).limit(1)
         budget = next(iter(budget), None)
         if not budget:
-            raise HTTPException(status_code=409, detail="This club needs a budget before funding can be approved.")
+            current_year = datetime.now(timezone.utc).year
+            academic_year = f"{current_year}-{current_year + 1}"
+            try:
+                created_budget = insert(db, "budgets", {
+                    "clubId": pending["clubId"],
+                    "academicYear": academic_year,
+                    "totalAllocated": 0,
+                    "totalSpent": 0,
+                })
+                budget = {"_id": as_oid(created_budget["_id"]), "clubId": pending["clubId"]}
+                created_budget_id = budget["_id"]
+            except DuplicateKeyError:
+                budget = collection(db, "budgets").find_one({
+                    "clubId": pending["clubId"],
+                    "academicYear": academic_year,
+                })
+                if not budget:
+                    raise HTTPException(status_code=409, detail="The club budget changed while funding was being approved.")
+                created_budget_id = None
+        else:
+            created_budget_id = None
 
     if mentor_review or rejected:
         expected_status = pending.get("status")
@@ -290,9 +313,14 @@ def review_funding_request(request: Request, identity: str, body: dict, profile=
         if transaction:
             collection(db, "transactions").delete_one({"_id": as_oid(transaction["_id"])})
         if budget_updated:
-            collection(db, "budgets").update_one(
-                {"_id": budget["_id"]}, {"$inc": {"totalAllocated": -pending["requestedAmount"]}}
-            )
+            if created_budget_id:
+                collection(db, "budgets").delete_one({"_id": created_budget_id})
+            else:
+                collection(db, "budgets").update_one(
+                    {"_id": budget["_id"]}, {"$inc": {"totalAllocated": -pending["requestedAmount"]}}
+                )
+        elif created_budget_id:
+            collection(db, "budgets").delete_one({"_id": created_budget_id})
         requests.update_one(
             {"_id": pending["_id"], "status": "student_affairs_processing"},
             {"$set": {"status": "student_affairs_pending", "updatedAt": datetime.now(timezone.utc)},
@@ -408,34 +436,131 @@ def create_transaction(request: Request, body: dict, profile=Depends(current_pro
 @router.get("/equipment")
 def list_equipment(request: Request, clubId: str | None = None, profile=Depends(current_profile)):
     db = request.app.state.db
-    verified_access = has_verified_club_access(db, profile.get("verifiedClubId"), profile)
-    if verified_access:
-        verified_club_id = as_oid(profile["verifiedClubId"])
-        requested_club_id = as_oid(clubId, "clubId") if clubId else verified_club_id
-        if requested_club_id != verified_club_id:
-            raise HTTPException(status_code=403, detail="A verified club session can only access its club equipment.")
-        query = {"clubId": verified_club_id}
-    else:
-        query = {"clubId": as_oid(clubId, "clubId")} if clubId else {}
-    records = list(collection(db, "equipment").find(query).sort("name", 1))
+    if clubId:
+        as_oid(clubId, "clubId")
+    query = {"active": {"$ne": False}}
+    equipment_collection = collection(db, "equipment")
+    records = list(equipment_collection.find(query).sort("name", 1))
+    for item in records:
+        if profile.get("role") == Role.ADMIN.value and (
+            item.get("scope") != "campus" or item.get("clubId") is not None
+        ):
+            equipment_collection.update_one(
+                {"_id": item["_id"], "active": {"$ne": False}},
+                {"$set": {"scope": "campus"}, "$unset": {"clubId": ""}},
+            )
+        item["scope"] = "campus"
+        item.pop("clubId", None)
     populate_many(db, records, [("clubId", "clubs", ["name"])])
     return [serialize_document(item) for item in records]
 
 
 @router.post("/equipment", status_code=201)
 def create_equipment(request: Request, body: dict, profile=Depends(current_profile)):
-    require_fields(body, ["clubId", "name", "totalQuantity"])
+    is_admin = profile.get("role") == Role.ADMIN.value
+    if not is_admin:
+        raise HTTPException(status_code=403, detail="Only an administrator can add equipment to the shared campus inventory.")
+    is_campus_inventory = is_admin
+    require_fields(body, ["name", "totalQuantity"])
     db = request.app.state.db
-    require_club_manager(db, body["clubId"], profile)
     quantity = parse_number(body["totalQuantity"], "Total quantity", 1)
-    return insert(db, "equipment", {
-        "clubId": as_oid(body["clubId"], "clubId"),
+    item = {
         "name": body["name"],
         "description": body.get("description", ""),
         "totalQuantity": quantity,
         "availableQuantity": quantity,
         "condition": body.get("condition", "good"),
+    }
+    if is_campus_inventory:
+        item["scope"] = "campus"
+        item["addedBy"] = as_oid(profile["_id"])
+    return insert(db, "equipment", item)
+
+
+@router.patch("/equipment/{identity}")
+def edit_campus_equipment(request: Request, identity: str, body: dict, profile=Depends(current_profile)):
+    if profile.get("role") != Role.ADMIN.value:
+        raise HTTPException(status_code=403, detail="Only an administrator can edit campus equipment.")
+    db = request.app.state.db
+    equipment_collection = collection(db, "equipment")
+    equipment = equipment_collection.find_one({"_id": as_oid(identity, "equipmentId")})
+    if not equipment or equipment.get("active") is False:
+        raise HTTPException(status_code=404, detail="Campus inventory item not found.")
+
+    updates = {}
+    if "name" in body:
+        name = body["name"]
+        if not isinstance(name, str) or not name.strip() or len(name.strip()) > 120:
+            raise HTTPException(status_code=400, detail="Equipment name must be between 1 and 120 characters.")
+        updates["name"] = name.strip()
+    if "description" in body:
+        description = body["description"]
+        if not isinstance(description, str) or len(description) > 1000:
+            raise HTTPException(status_code=400, detail="Equipment description must be text up to 1000 characters.")
+        updates["description"] = description.strip()
+    if "condition" in body:
+        condition = body["condition"]
+        if condition not in {"new", "good", "fair", "poor"}:
+            raise HTTPException(status_code=400, detail="Choose a valid equipment condition.")
+        updates["condition"] = condition
+    if "totalQuantity" in body:
+        quantity = parse_number(body["totalQuantity"], "Total quantity", 1)
+        if not quantity.is_integer():
+            raise HTTPException(status_code=400, detail="Total quantity must be a whole number.")
+        borrowed_quantity = equipment.get("totalQuantity", 0) - equipment.get("availableQuantity", 0)
+        if quantity < borrowed_quantity:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Total quantity cannot be less than the {borrowed_quantity} item(s) currently borrowed.",
+            )
+        updates["totalQuantity"] = int(quantity)
+        updates["availableQuantity"] = int(quantity) - borrowed_quantity
+    if not updates:
+        raise HTTPException(status_code=400, detail="Provide equipment details to update.")
+    updates["updatedAt"] = datetime.now(timezone.utc)
+    result = equipment_collection.update_one(
+        {
+            "_id": equipment["_id"],
+            "active": {"$ne": False},
+            "totalQuantity": equipment.get("totalQuantity"),
+            "availableQuantity": equipment.get("availableQuantity"),
+        },
+        {"$set": {**updates, "scope": "campus"}, "$unset": {"clubId": ""}},
+    )
+    if not result.matched_count:
+        raise HTTPException(status_code=409, detail="This inventory item changed while you were editing it. Refresh and try again.")
+    equipment.update(updates)
+    return serialize_document(equipment)
+
+
+@router.delete("/equipment/{identity}")
+def delete_campus_equipment(request: Request, identity: str, profile=Depends(current_profile)):
+    if profile.get("role") != Role.ADMIN.value:
+        raise HTTPException(status_code=403, detail="Only an administrator can remove campus equipment.")
+    db = request.app.state.db
+    equipment_collection = collection(db, "equipment")
+    equipment = equipment_collection.find_one({"_id": as_oid(identity, "equipmentId")})
+    if not equipment or equipment.get("active") is False:
+        raise HTTPException(status_code=404, detail="Campus inventory item not found.")
+    archived_at = datetime.now(timezone.utc)
+    result = equipment_collection.update_one(
+        {"_id": equipment["_id"], "active": {"$ne": False}},
+        {"$set": {
+            "active": False,
+            "archivedAt": archived_at,
+            "archivedBy": as_oid(profile["_id"]),
+            "updatedAt": archived_at,
+        }},
+    )
+    if not result.matched_count:
+        raise HTTPException(status_code=409, detail="This inventory item changed while you were removing it.")
+    equipment.update({
+        "active": False,
+        "archivedAt": archived_at,
+        "archivedBy": as_oid(profile["_id"]),
+        "updatedAt": archived_at,
     })
+    return serialize_document(equipment)
 
 
 @router.get("/equipment-borrows")
@@ -485,22 +610,52 @@ def list_borrows(request: Request, profile=Depends(current_profile)):
 
 @router.post("/equipment-borrows", status_code=201)
 def request_borrow(request: Request, body: dict, profile=Depends(current_profile)):
-    now = datetime.now(timezone.utc)
+    if "items" in body:
+        return request_borrows(request, body, profile)
+    record = build_borrow_record(request, body, profile)
+    return insert(request.app.state.db, "borrows", record)
+
+
+@router.post("/equipment-borrows/batch", status_code=201)
+def request_borrows(request: Request, body: dict, profile=Depends(current_profile)):
+    items = body.get("items")
+    if not isinstance(items, list) or not items or len(items) > 20:
+        raise HTTPException(status_code=400, detail="Select between 1 and 20 equipment items.")
+    equipment_ids = [item.get("equipmentId") for item in items if isinstance(item, dict)]
+    if len(equipment_ids) != len(items) or len(set(map(str, equipment_ids))) != len(items):
+        raise HTTPException(status_code=400, detail="Each selected equipment item must be unique and valid.")
+    db = request.app.state.db
+    records = [
+        build_borrow_record(request, {**body, **item}, profile)
+        for item in items
+    ]
+    created_at = datetime.now(timezone.utc)
+    for record in records:
+        record["createdAt"] = created_at
+        record["updatedAt"] = created_at
+    result = collection(db, "borrows").insert_many(records)
+    for record, identity in zip(records, result.inserted_ids):
+        record["_id"] = identity
+    return [serialize_document(record) for record in records]
+
+
+def build_borrow_record(request: Request, body: dict, profile: dict):
+    requested_at = datetime.now(timezone.utc)
     legacy_request = "startDate" not in body and "endDate" not in body and body.get("dueDate")
     require_fields(body, ["equipmentId", "clubId"])
     if legacy_request:
-        start_date = now
+        start_date = requested_at
         end_date = parse_date(body["dueDate"], "Choose a valid end time.")
         quantity = 1
     else:
-        require_fields(body, ["startDate", "endDate", "quantity"])
+        require_fields(body, ["startDate", "endDate", "quantity", "location"])
         start_date = parse_date(body["startDate"], "Choose a valid start time.")
         end_date = parse_date(body["endDate"], "Choose a valid end time.")
         quantity = parse_number(body["quantity"], "Quantity", 1)
         if not quantity.is_integer():
             raise HTTPException(status_code=400, detail="Quantity must be a whole number.")
         quantity = int(quantity)
-    if start_date < now:
+    if start_date < requested_at:
         raise HTTPException(status_code=400, detail="Choose a start time in the future.")
     if end_date <= start_date:
         raise HTTPException(status_code=400, detail="The end time must be after the start time.")
@@ -519,9 +674,11 @@ def request_borrow(request: Request, body: dict, profile=Depends(current_profile
     if event_id and (not event or not event_involves_club(event, club_id)):
         raise HTTPException(status_code=404, detail="Choose an event hosted by this club.")
     equipment_id = as_oid(body["equipmentId"], "equipmentId")
-    equipment = collection(db, "equipment").find_one({"_id": equipment_id, "clubId": club_id})
+    equipment = collection(db, "equipment").find_one({"_id": equipment_id})
     if not equipment:
-        raise HTTPException(status_code=404, detail="Equipment not found in this club.")
+        raise HTTPException(status_code=404, detail="Equipment not found.")
+    if equipment.get("active") is False:
+        raise HTTPException(status_code=404, detail="This equipment is no longer available in the campus catalogue.")
     if equipment.get("availableQuantity", 0) < quantity:
         raise HTTPException(status_code=409, detail="The requested quantity is no longer available.")
     purpose = body.get("purpose", "")
@@ -532,8 +689,16 @@ def request_borrow(request: Request, body: dict, profile=Depends(current_profile
         raise HTTPException(status_code=400, detail="Enter a reason for requesting this equipment.")
     if len(purpose) > 1000:
         raise HTTPException(status_code=400, detail="Equipment request purpose must be no more than 1000 characters.")
+    location = body.get("location", "")
+    if not isinstance(location, str):
+        raise HTTPException(status_code=400, detail="Equipment request location must be text.")
+    location = location.strip()
+    if not legacy_request and not location:
+        raise HTTPException(status_code=400, detail="Enter where the equipment will be used.")
+    if len(location) > 200:
+        raise HTTPException(status_code=400, detail="Equipment request location must be no more than 200 characters.")
     approval_event = event or {"clubId": club_id, "coHostIds": []}
-    return insert(db, "borrows", {
+    return {
         "equipmentId": equipment_id,
         "clubId": club_id,
         "eventId": event_id,
@@ -541,14 +706,15 @@ def request_borrow(request: Request, body: dict, profile=Depends(current_profile
         "profileId": as_oid(profile["_id"]),
         "quantity": quantity,
         "purpose": purpose,
+        "location": location,
         "startDate": start_date,
         "endDate": end_date,
         "dueDate": end_date,
-        "borrowDate": now,
+        "borrowDate": requested_at,
         "status": "mentor_pending",
         "rejectionFeedback": "",
         "reviewHistory": [],
-    })
+    }
 
 
 @router.patch("/equipment-borrows/{identity}")
@@ -595,6 +761,16 @@ def edit_borrow_request(request: Request, identity: str, body: dict, profile=Dep
         if len(purpose) > 1000:
             raise HTTPException(status_code=400, detail="Equipment request purpose must be no more than 1000 characters.")
         updates["purpose"] = purpose
+    if "location" in body:
+        location = body["location"]
+        if not isinstance(location, str):
+            raise HTTPException(status_code=400, detail="Equipment request location must be text.")
+        location = location.strip()
+        if not location:
+            raise HTTPException(status_code=400, detail="Enter where the equipment will be used.")
+        if len(location) > 200:
+            raise HTTPException(status_code=400, detail="Equipment request location must be no more than 200 characters.")
+        updates["location"] = location
     if not updates:
         raise HTTPException(status_code=400, detail="Provide equipment request details to update.")
     updates["updatedAt"] = datetime.now(timezone.utc)

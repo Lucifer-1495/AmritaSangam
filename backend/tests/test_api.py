@@ -627,7 +627,7 @@ def test_api_keeps_the_existing_route_contract():
         "/api/event-reports",
         "/api/reports/summary",
     } <= paths
-    assert sum(len(operations) for operations in routes.values()) == 77
+    assert sum(len(operations) for operations in routes.values()) == 80
     assert {
         "/api/auth/password-reset/request",
         "/api/auth/password-reset/confirm",
@@ -638,6 +638,10 @@ def test_api_keeps_the_existing_route_contract():
     assert "/api/auth/club-login/verify" not in paths
     assert "/api/profiles/mentor-directory" not in paths
     assert "/api/venues/availability" in paths
+    assert {"get", "post"} <= set(routes["/api/equipment"])
+    assert "patch" in routes["/api/equipment/{identity}"]
+    assert "delete" in routes["/api/equipment/{identity}"]
+    assert "post" in routes["/api/equipment-borrows/batch"]
 
 
 def test_mongo_documents_serialize_ids_and_dates_for_react():
@@ -705,6 +709,14 @@ class FakeCollection:
         self.records.append(record)
         return SimpleNamespace(inserted_id=record["_id"])
 
+    def insert_many(self, records):
+        identities = []
+        for record in records:
+            record["_id"] = ObjectId()
+            self.records.append(record)
+            identities.append(record["_id"])
+        return SimpleNamespace(inserted_ids=identities)
+
     def delete_one(self, query):
         record = self.find_one(query)
         if record:
@@ -769,7 +781,7 @@ def test_equipment_request_saves_quantity_and_requested_time_range():
         "clubs": FakeCollection([{"_id": club_id, "mentorIds": [mentor_id]}]),
         "equipment": FakeCollection([{
             "_id": equipment_id,
-            "clubId": club_id,
+            "scope": "campus",
             "availableQuantity": 4,
         }]),
         "clubmembers": FakeCollection(),
@@ -791,14 +803,330 @@ def test_equipment_request_saves_quantity_and_requested_time_range():
         "quantity": 2,
         "startDate": start.isoformat(),
         "endDate": end.isoformat(),
+        "location": "Engineering block, room 204",
         "purpose": "Workshop setup",
     }, profile)
 
     assert result["quantity"] == 2
     assert result["purpose"] == "Workshop setup"
+    assert result["location"] == "Engineering block, room 204"
     assert result["status"] == "mentor_pending"
     assert result["startDate"] == start.isoformat()
     assert result["endDate"] == end.isoformat()
+
+    with pytest.raises(HTTPException) as missing_location:
+        campus_routes.request_borrow(request, {
+            "clubId": str(club_id),
+            "equipmentId": str(equipment_id),
+            "quantity": 1,
+            "startDate": start.isoformat(),
+            "endDate": end.isoformat(),
+            "location": "   ",
+            "purpose": "Workshop setup",
+        }, profile)
+    assert missing_location.value.status_code == 400
+
+    database["equipment"].records[0]["active"] = False
+    with pytest.raises(HTTPException) as archived:
+        campus_routes.request_borrow(request, {
+            "clubId": str(club_id),
+            "equipmentId": str(equipment_id),
+            "quantity": 1,
+            "startDate": start.isoformat(),
+            "endDate": end.isoformat(),
+            "location": "Engineering block, room 204",
+            "purpose": "Workshop setup",
+        }, profile)
+    assert archived.value.status_code == 404
+
+
+def test_club_can_submit_multiple_equipment_items_in_one_request(monkeypatch):
+    club_id, profile_id, mentor_id = ObjectId(), ObjectId(), ObjectId()
+    projector_id, camera_id = ObjectId(), ObjectId()
+    borrows = FakeCollection()
+    database = {
+        "clubs": FakeCollection([{"_id": club_id, "mentorIds": [mentor_id]}]),
+        "equipment": FakeCollection([
+            {"_id": projector_id, "scope": "campus", "availableQuantity": 3},
+            {"_id": camera_id, "scope": "campus", "availableQuantity": 2},
+        ]),
+        "clubmembers": FakeCollection(),
+        "equipmentborrows": borrows,
+    }
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(db=database)))
+    profile = {
+        "_id": str(profile_id),
+        "role": "club_committee",
+        "isClubAccount": True,
+        "verifiedClubId": str(club_id),
+    }
+    monkeypatch.setattr(campus_routes, "active_membership", lambda *_: None)
+    monkeypatch.setattr(campus_routes, "has_verified_club_access", lambda *_: True)
+    monkeypatch.setattr(campus_routes, "mentor_approval_assignments", lambda *_: [{
+        "clubId": club_id,
+        "mentorId": mentor_id,
+        "status": "pending",
+    }])
+    start = datetime.now(timezone.utc) + timedelta(days=1)
+    end = start + timedelta(hours=4)
+
+    result = campus_routes.request_borrow(request, {
+        "clubId": str(club_id),
+        "items": [
+            {"equipmentId": str(projector_id), "quantity": 2},
+            {"equipmentId": str(camera_id), "quantity": 1},
+        ],
+        "startDate": start.isoformat(),
+        "endDate": end.isoformat(),
+        "location": "Auditorium",
+        "purpose": "Club showcase",
+    }, profile)
+
+    assert len(result) == 2
+    assert {item["equipmentId"] for item in result} == {str(projector_id), str(camera_id)}
+    assert {item["quantity"] for item in result} == {1, 2}
+    assert {item["status"] for item in result} == {"mentor_pending"}
+    assert len(borrows.records) == 2
+
+    with pytest.raises(HTTPException) as invalid_batch:
+        campus_routes.request_borrow(request, {
+            "clubId": str(club_id),
+            "items": [
+                {"equipmentId": str(projector_id), "quantity": 1},
+                {"equipmentId": str(camera_id), "quantity": 3},
+            ],
+            "startDate": start.isoformat(),
+            "endDate": end.isoformat(),
+            "location": "Auditorium",
+            "purpose": "Club showcase",
+        }, profile)
+    assert invalid_batch.value.status_code == 409
+    assert len(borrows.records) == 2
+
+
+def test_student_affairs_can_add_shared_campus_equipment():
+    equipment = FakeCollection()
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(db={"equipment": equipment})))
+    student_affairs = {
+        "_id": str(ObjectId()),
+        "role": "college_admin",
+        "adminType": "student_affairs",
+    }
+
+    result = campus_routes.create_equipment(request, {
+        "scope": "campus",
+        "name": "Portable projector",
+        "description": "Available to every club.",
+        "totalQuantity": 3,
+        "condition": "good",
+    }, student_affairs)
+
+    assert result["scope"] == "campus"
+    assert "clubId" not in result
+    assert result["availableQuantity"] == 3
+    assert result["totalQuantity"] == 3
+
+    with pytest.raises(HTTPException) as unauthorized:
+        campus_routes.create_equipment(request, {
+            "scope": "campus",
+            "name": "Unapproved inventory",
+            "totalQuantity": 1,
+        }, {"_id": str(ObjectId()), "role": "student"})
+    assert unauthorized.value.status_code == 403
+
+
+def test_any_admin_adds_equipment_to_campus_not_a_club():
+    equipment = FakeCollection()
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(db={"equipment": equipment})))
+    principal = {
+        "_id": str(ObjectId()),
+        "role": "college_admin",
+        "adminType": "principal",
+    }
+
+    result = campus_routes.create_equipment(request, {
+        "name": "Portable speaker",
+        "totalQuantity": 2,
+        "clubId": str(ObjectId()),
+    }, principal)
+
+    assert result["scope"] == "campus"
+    assert "clubId" not in result
+
+
+def test_any_admin_can_edit_and_archive_shared_equipment_without_losing_loan_history(monkeypatch):
+    equipment_id = ObjectId()
+
+    class CampusInventoryCollection(FakeCollection):
+        @staticmethod
+        def matches(record, query):
+            for key, value in query.items():
+                if key == "$and":
+                    if not all(CampusInventoryCollection.matches(record, branch) for branch in value):
+                        return False
+                elif isinstance(value, dict) and "$ne" in value:
+                    if record.get(key) == value["$ne"]:
+                        return False
+                elif record.get(key) != value:
+                    return False
+            return True
+
+        def find_one(self, query, projection=None):
+            return next((record for record in self.records if self.matches(record, query)), None)
+
+        def find(self, query=None, projection=None):
+            return FakeCursor([
+                record for record in self.records
+                if self.matches(record, query or {})
+            ])
+
+    inventory = CampusInventoryCollection([{
+        "_id": equipment_id,
+        "scope": "campus",
+        "name": "Portable projector",
+        "description": "Older description",
+        "condition": "good",
+        "totalQuantity": 5,
+        "availableQuantity": 3,
+    }])
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(db={"equipment": inventory})))
+    campus_admin = {
+        "_id": str(ObjectId()),
+        "role": "college_admin",
+        "adminType": "other_authority",
+    }
+
+    updated = campus_routes.edit_campus_equipment(request, str(equipment_id), {
+        "name": "HD projector",
+        "description": "Updated description",
+        "condition": "new",
+        "totalQuantity": 6,
+    }, campus_admin)
+    assert updated["name"] == "HD projector"
+    assert updated["availableQuantity"] == 4
+    assert updated["scope"] == "campus"
+    assert "clubId" not in updated
+
+    with pytest.raises(HTTPException) as below_borrowed:
+        campus_routes.edit_campus_equipment(request, str(equipment_id), {
+            "totalQuantity": 1,
+        }, campus_admin)
+    assert below_borrowed.value.status_code == 409
+
+    unauthorized_profiles = [
+        {"_id": str(ObjectId()), "role": "student"},
+        {"_id": str(ObjectId()), "role": "faculty_coordinator"},
+        {"_id": str(ObjectId()), "role": "club_committee"},
+        {"_id": str(ObjectId()), "role": "icts"},
+    ]
+    for unauthorized in unauthorized_profiles:
+        with pytest.raises(HTTPException) as edit_forbidden:
+            campus_routes.edit_campus_equipment(request, str(equipment_id), {"name": "Changed"}, unauthorized)
+        assert edit_forbidden.value.status_code == 403
+        with pytest.raises(HTTPException) as delete_forbidden:
+            campus_routes.delete_campus_equipment(request, str(equipment_id), unauthorized)
+        assert delete_forbidden.value.status_code == 403
+
+    archived = campus_routes.delete_campus_equipment(request, str(equipment_id), campus_admin)
+    assert archived["active"] is False
+    assert inventory.records[0]["availableQuantity"] == 4
+    assert inventory.records[0]["scope"] == "campus"
+
+    monkeypatch.setattr(campus_routes, "has_verified_club_access", lambda *_: False)
+    monkeypatch.setattr(campus_routes, "populate_many", lambda *_: None)
+    assert campus_routes.list_equipment(request, profile=unauthorized_profiles[0]) == []
+    with pytest.raises(HTTPException) as missing:
+        campus_routes.edit_campus_equipment(request, str(equipment_id), {"name": "Changed"}, campus_admin)
+    assert missing.value.status_code == 404
+
+
+def test_admin_equipment_list_migrates_legacy_club_items_to_campus(monkeypatch):
+    legacy_id = ObjectId()
+
+    class CampusInventory(FakeCollection):
+        @staticmethod
+        def matches(record, query):
+            for key, value in query.items():
+                if isinstance(value, dict) and "$ne" in value:
+                    if record.get(key) == value["$ne"]:
+                        return False
+                elif record.get(key) != value:
+                    return False
+            return True
+
+        def find(self, query=None, projection=None):
+            return FakeCursor([
+                record for record in self.records
+                if self.matches(record, query or {})
+            ])
+
+        def update_one(self, query, update):
+            record = next((record for record in self.records if self.matches(record, query)), None)
+            if record is None:
+                return SimpleNamespace(matched_count=0, modified_count=0)
+            record.update(update.get("$set", {}))
+            for field in update.get("$unset", {}):
+                record.pop(field, None)
+            return SimpleNamespace(matched_count=1, modified_count=1)
+
+    stock = CampusInventory([{
+        "_id": legacy_id,
+        "clubId": ObjectId(),
+        "name": "Legacy camera",
+        "totalQuantity": 1,
+        "availableQuantity": 1,
+    }])
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(db={"equipment": stock})))
+    admin = {"_id": str(ObjectId()), "role": "college_admin", "adminType": "principal"}
+    monkeypatch.setattr(campus_routes, "has_verified_club_access", lambda *_: False)
+    monkeypatch.setattr(campus_routes, "populate_many", lambda *_: None)
+
+    records = campus_routes.list_equipment(request, profile=admin)
+
+    assert records[0]["scope"] == "campus"
+    assert "clubId" not in records[0]
+    assert stock.records[0]["scope"] == "campus"
+    assert "clubId" not in stock.records[0]
+
+
+def test_verified_club_can_browse_all_shared_inventory_including_legacy_club_items(monkeypatch):
+    club_id, other_club_id = ObjectId(), ObjectId()
+    shared_item = {"_id": ObjectId(), "name": "Campus projector", "scope": "campus"}
+    own_item = {"_id": ObjectId(), "name": "Club camera", "clubId": club_id}
+    other_item = {"_id": ObjectId(), "name": "Other club camera", "clubId": other_club_id}
+
+    class ScopedEquipment(FakeCollection):
+        @staticmethod
+        def matches(record, query):
+            for key, value in query.items():
+                if key == "$or" and not any(ScopedEquipment.matches(record, branch) for branch in value):
+                    return False
+                if key == "$and" and not all(ScopedEquipment.matches(record, branch) for branch in value):
+                    return False
+                if key not in {"$or", "$and"} and isinstance(value, dict) and "$ne" in value:
+                    if record.get(key) == value["$ne"]:
+                        return False
+                elif key not in {"$or", "$and"} and record.get(key) != value:
+                    return False
+            return True
+
+        def find(self, query=None, projection=None):
+            return FakeCursor([
+                record for record in self.records
+                if self.matches(record, query or {})
+            ])
+
+    monkeypatch.setattr(campus_routes, "has_verified_club_access", lambda *_: True)
+    monkeypatch.setattr(campus_routes, "populate_many", lambda *_: None)
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(db={
+        "equipment": ScopedEquipment([shared_item, own_item, other_item]),
+    })))
+    profile = {"_id": str(ObjectId()), "role": "club_committee", "verifiedClubId": str(club_id)}
+
+    visible = campus_routes.list_equipment(request, profile=profile)
+
+    assert {item["name"] for item in visible} == {"Campus projector", "Club camera", "Other club camera"}
+    assert all(item["scope"] == "campus" and "clubId" not in item for item in visible)
 
 
 def test_cohosted_workflow_waits_for_every_assigned_mentor():
@@ -1518,10 +1846,9 @@ def test_verified_club_dashboard_data_is_scoped_to_the_verified_club(monkeypatch
         {"coHostIds": {"$in": [club_id]}},
     ]}
     assert events.query == expected
-    assert equipment.query == {"clubId": club_id}
-    with pytest.raises(HTTPException) as error:
-        campus_routes.list_equipment(request, str(ObjectId()), profile)
-    assert error.value.status_code == 403
+    assert equipment.query == {"active": {"$ne": False}}
+    campus_routes.list_equipment(request, str(ObjectId()), profile)
+    assert equipment.query == {"active": {"$ne": False}}
 
 
 def test_campus_directory_matches_requested_venues_clubs_and_event_organizers():
@@ -2152,6 +2479,47 @@ def test_funding_request_requires_both_review_stages_before_ledger_allocation():
     assert approved["status"] == "approved"
     assert budgets.records[0]["totalAllocated"] == 750
     assert len(transactions.records) == 1
+
+
+def test_student_affairs_approval_creates_current_year_budget_when_club_has_none():
+    request_id, club_id, mentor_id, affairs_id = (ObjectId() for _ in range(4))
+    funding = FakeCollection([{
+        "_id": request_id,
+        "clubId": club_id,
+        "requestedAmount": 1250,
+        "purpose": "Workshop materials",
+        "status": "mentor_pending",
+        "mentorApprovals": [{
+            "clubId": club_id,
+            "mentorId": mentor_id,
+            "status": "pending",
+        }],
+    }])
+    budgets = FakeCollection()
+    transactions = FakeCollection()
+    db = {
+        "fundingrequests": funding,
+        "clubs": FakeCollection([{"_id": club_id, "mentor": mentor_id}]),
+        "clubbudgets": budgets,
+        "budgettransactions": transactions,
+    }
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(db=db)))
+    mentor = {"_id": str(mentor_id), "role": "faculty_coordinator"}
+    affairs = {"_id": str(affairs_id), "role": "college_admin", "adminType": "student_affairs"}
+
+    forwarded = review_funding_request(request, str(request_id), {"status": "approved"}, mentor)
+    assert forwarded["status"] == "student_affairs_pending"
+    assert budgets.records == []
+
+    approved = review_funding_request(request, str(request_id), {"status": "approved"}, affairs)
+
+    assert approved["status"] == "approved"
+    assert len(budgets.records) == 1
+    assert budgets.records[0]["clubId"] == club_id
+    assert budgets.records[0]["academicYear"] == f"{datetime.now(timezone.utc).year}-{datetime.now(timezone.utc).year + 1}"
+    assert budgets.records[0]["totalAllocated"] == 1250
+    assert transactions.records[0]["amount"] == 1250
+    assert transactions.records[0]["type"] == "credit"
 
 
 def test_office_bearers_cannot_view_transactions(monkeypatch):

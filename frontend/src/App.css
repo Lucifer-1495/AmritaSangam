@@ -180,6 +180,16 @@
 .equipment-card { overflow: hidden; }.equipment-art { position: relative; display: flex; height: 106px; align-items: center; justify-content: center; color: #8a2343; background: #f0edf1; }.equipment-art-1 { color: #b4775d; background: linear-gradient(135deg,#fff1e9,#f8e4db); }.equipment-art-2 { color: #47836d; background: linear-gradient(135deg,#eaf6ef,#dcefe3); }
 .equipment-condition { position: absolute; right: 9px; bottom: 8px; padding: 4px 7px; border-radius: 9px; color: #6d6980; background: #ffffffb5; font-size: 8px; text-transform: capitalize; }
 .equipment-card-body { padding: 13px; }.equipment-card-body > p { min-height: 30px; }.equipment-card-bottom { display: flex; align-items: center; justify-content: space-between; gap: 5px; padding-top: 8px; border-top: 1px solid #f0eff2; }
+.equipment-management-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; padding-top: 8px; border-top: 1px solid #f0eff2; }
+.equipment-empty-state { display: grid; justify-items: center; gap: 12px; grid-column: 1 / -1; padding: 30px 18px; text-align: center; }
+.equipment-request-picker { display: grid; gap: 9px; margin: 0; padding: 12px; border: 1px solid #e9e6ed; border-radius: 8px; }
+.equipment-request-picker legend { padding: 0 5px; color: #77727f; font-size: 10px; font-weight: 650; }
+.equipment-request-choice { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid #efedf2; }
+.equipment-request-choice > label:first-child { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 10px; }
+.equipment-request-choice input[type="checkbox"] { width: 15px; height: 15px; accent-color: #b50346; }
+.equipment-request-choice .equipment-request-quantity { display: flex; align-items: center; gap: 6px; color: #77727f; font-size: 9px; white-space: nowrap; }
+.equipment-request-quantity input { width: 64px; min-height: 32px; padding: 0 7px; border: 1px solid #e9e6ed; border-radius: 6px; background: var(--surface); color: var(--text); }
+.equipment-request-picker > small { color: #898591; font-size: 9px; }
 .availability, .unavailable { display: flex; align-items: center; gap: 6px; color: #5a886f; font-size: 8px; }.availability i, .unavailable i { width: 6px; height: 6px; border-radius: 50%; background: #62a27f; }.unavailable { color: #ad7168; }.unavailable i { background: #ca8478; }
 
 .funding-page > .section-heading { margin-top: 24px; padding-top: 17px; border-top: 1px solid #eceaf1; }
