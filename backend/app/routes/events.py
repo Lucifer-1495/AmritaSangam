@@ -306,11 +306,14 @@ def manage_events(request: Request, profile=Depends(current_profile)):
         {"clubId": {"$in": ids}},
         {"coHostIds": {"$in": ids}},
     ]}
-    query = {} if profile["role"] == Role.ADMIN.value else (
-        club_event_query if verified_access else {
-            "$or": [{"status": "approved"}, *club_event_query["$or"]]
-        }
-    )
+    if profile["role"] == Role.STUDENT.value and not profile.get("isClubAccount"):
+        query = {"status": "approved"}
+    else:
+        query = {} if profile["role"] == Role.ADMIN.value else (
+            club_event_query if verified_access else {
+                "$or": [{"status": "approved"}, *club_event_query["$or"]]
+            }
+        )
     events = list(collection(db, "events").find(query).sort("eventDate", 1))
     populate_many(db, events, [
         ("clubId", "clubs", ["name", "clubType", "mentor", "mentorIds", "organizationType"]),

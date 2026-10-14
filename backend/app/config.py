@@ -15,6 +15,7 @@ class Settings:
     supabase_anon_key = os.getenv("SUPABASE_ANON_KEY", "")
     cookie_samesite = os.getenv("COOKIE_SAMESITE", "none").lower()
     supabase_service_role_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "")
+    club_credential_encryption_key = os.getenv("CLUB_CREDENTIAL_ENCRYPTION_KEY", "")
     icts_email = (os.getenv("ICTS_EMAIL") or os.getenv("SUPER_ADMIN_EMAIL", "")).strip().lower()
     client_origin = os.getenv("CLIENT_ORIGIN", "http://localhost:5173")
     port = int(os.getenv("PORT", "5000"))

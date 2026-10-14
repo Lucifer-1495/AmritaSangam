@@ -31,6 +31,7 @@ from app.services.common import (
     verify_shared_password,
 )
 from app.services.media import validate_image_data_url
+from app.services import supabase as supabase_service
 
 
 @pytest.fixture
@@ -1589,7 +1590,7 @@ def test_icts_credential_request_stores_encrypted_password_and_applies_it_to_sup
         "principalType": "club_account",
         "clubId": club_id,
     }])
-    monkeypatch.setattr(settings, "supabase_service_role_key", "test-service-role-key")
+    monkeypatch.setattr(settings, "club_credential_encryption_key", "stable-test-encryption-key")
     monkeypatch.setattr(
         club_routes, "create_supabase_user",
         lambda email, password, name: {"id": "new-club-auth-id", "email": email},
@@ -1667,6 +1668,93 @@ def test_icts_credential_request_stores_encrypted_password_and_applies_it_to_sup
     })]
     assert credentials.records[0]["email"] == "updated@example.edu"
     assert records.records[-1]["status"] == "applied"
+
+
+def test_update_supabase_user_surfaces_error_field(monkeypatch):
+    monkeypatch.setattr(settings, "supabase_url", "https://supabase.example.test")
+    monkeypatch.setattr(settings, "supabase_service_role_key", "eyJhbGciOiJIUzI1NiJ9.service-role-key")
+    monkeypatch.setattr(
+        supabase_service.httpx,
+        "put",
+        lambda *args, **kwargs: httpx.Response(403, json={"error": "Admin access required"}),
+    )
+
+    with pytest.raises(HTTPException) as error:
+        supabase_service.update_supabase_user("supabase-user-id", {"email": "updated@example.edu"})
+
+    assert error.value.detail == "Admin access required"
+
+
+def test_new_club_credential_request_supersedes_an_approved_request(monkeypatch):
+    club_id = ObjectId()
+    profile_id = ObjectId()
+    previous_request = {
+        "_id": ObjectId(),
+        "clubId": club_id,
+        "status": "approved",
+        "passwordCiphertext": "unreadable-with-current-encryption-key",
+    }
+    requests = FakeCollection([previous_request])
+    monkeypatch.setattr(settings, "club_credential_encryption_key", "stable-test-encryption-key")
+    database = {
+        "clubs": FakeCollection([{"_id": club_id, "name": "Test club"}]),
+        "clubcredentials": FakeCollection([{"clubId": club_id, "email": "club@example.edu"}]),
+        "clubcredentialchangerequests": requests,
+    }
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(db=database)))
+
+    created = club_routes.request_club_credential_change(
+        request,
+        {"clubId": str(club_id), "clubLoginPassword": "replacement-password"},
+        {"_id": str(profile_id), "role": "icts"},
+    )
+
+    assert previous_request["status"] == "superseded"
+    assert "passwordCiphertext" not in previous_request
+    assert created["status"] == "pending"
+    assert requests.records[-1]["passwordCiphertext"] != "replacement-password"
+
+
+def test_new_club_credential_request_supersedes_a_pending_request(monkeypatch):
+    club_id = ObjectId()
+    profile_id = ObjectId()
+    previous_request = {
+        "_id": ObjectId(),
+        "clubId": club_id,
+        "status": "pending",
+        "passwordCiphertext": "old-encrypted-password",
+    }
+    requests = FakeCollection([previous_request])
+    monkeypatch.setattr(settings, "club_credential_encryption_key", "stable-test-encryption-key")
+    database = {
+        "clubs": FakeCollection([{"_id": club_id, "name": "Test club"}]),
+        "clubcredentials": FakeCollection([{"clubId": club_id, "email": "club@example.edu"}]),
+        "clubcredentialchangerequests": requests,
+    }
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(db=database)))
+
+    created = club_routes.request_club_credential_change(
+        request,
+        {"clubId": str(club_id), "clubLoginPassword": "replacement-password"},
+        {"_id": str(profile_id), "role": "icts"},
+    )
+
+    assert previous_request["status"] == "superseded"
+    assert "passwordCiphertext" not in previous_request
+    assert created["status"] == "pending"
+    assert requests.records[-1]["passwordCiphertext"] != "replacement-password"
+
+
+def test_supabase_admin_rejects_new_secret_key_with_setup_guidance(monkeypatch):
+    monkeypatch.setattr(settings, "supabase_url", "https://supabase.example.test")
+    monkeypatch.setattr(settings, "supabase_service_role_key", "sb_secret_test-key")
+
+    with pytest.raises(HTTPException) as error:
+        supabase_service.update_supabase_user("supabase-user-id", {"email": "updated@example.edu"})
+
+    assert error.value.status_code == 503
+    assert "legacy Supabase service_role JWT" in error.value.detail
+    assert "restart the backend" in error.value.detail
 
 
 def test_office_bearers_cannot_view_funding_or_report_dashboards(monkeypatch):
@@ -1849,6 +1937,28 @@ def test_verified_club_dashboard_data_is_scoped_to_the_verified_club(monkeypatch
     assert equipment.query == {"active": {"$ne": False}}
     campus_routes.list_equipment(request, str(ObjectId()), profile)
     assert equipment.query == {"active": {"$ne": False}}
+
+
+def test_regular_students_only_receive_approved_events(monkeypatch):
+    class QuerySpy:
+        def __init__(self):
+            self.query = None
+
+        def find(self, query=None, projection=None):
+            self.query = query
+            return FakeCursor()
+
+    events = QuerySpy()
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(db={"events": events})))
+    profile = {"_id": str(ObjectId()), "role": "student"}
+    monkeypatch.setattr(event_routes, "has_verified_club_access", lambda *_: False)
+    monkeypatch.setattr(event_routes, "visible_club_ids", lambda *_: [])
+    monkeypatch.setattr(event_routes, "populate_many", lambda *args, **kwargs: None)
+    monkeypatch.setattr(event_routes, "populate_review_history", lambda *args, **kwargs: None)
+
+    event_routes.manage_events(request, profile)
+
+    assert events.query == {"status": "approved"}
 
 
 def test_campus_directory_matches_requested_venues_clubs_and_event_organizers():

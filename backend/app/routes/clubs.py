@@ -226,8 +226,38 @@ def request_club_credential_change(request: Request, body: dict, profile=Depends
     current_credentials = collection(db, "club_credentials").find_one({"clubId": club_id}, {"_id": 1})
     if not current_credentials and (not email or not password):
         raise HTTPException(status_code=400, detail="Set both the club email and password when configuring its first login.")
-    if requests.find_one({"clubId": club_id, "status": {"$in": ["pending", "approved"]}}, {"_id": 1}):
-        raise HTTPException(status_code=409, detail="This club already has a credential change awaiting approval or application.")
+    pending_request = requests.find_one({"clubId": club_id, "status": "pending"}, {"_id": 1})
+    if pending_request:
+        superseded_at = datetime.now(timezone.utc)
+        result = requests.update_one(
+            {"_id": pending_request["_id"], "status": "pending"},
+            {
+                "$set": {
+                    "status": "superseded",
+                    "supersededBy": as_oid(profile["_id"]),
+                    "supersededAt": superseded_at,
+                },
+                "$unset": {"passwordCiphertext": "", "passwordHash": ""},
+            },
+        )
+        if not result.modified_count:
+            raise HTTPException(status_code=409, detail="This credential request is already being reviewed or updated.")
+    approved_request = requests.find_one({"clubId": club_id, "status": "approved"})
+    if approved_request:
+        superseded_at = datetime.now(timezone.utc)
+        result = requests.update_one(
+            {"_id": approved_request["_id"], "status": "approved"},
+            {
+                "$set": {
+                    "status": "superseded",
+                    "supersededBy": as_oid(profile["_id"]),
+                    "supersededAt": superseded_at,
+                },
+                "$unset": {"passwordCiphertext": "", "passwordHash": ""},
+            },
+        )
+        if not result.modified_count:
+            raise HTTPException(status_code=409, detail="This approved credential change has already been updated.")
     values = {
         "clubId": club_id,
         "clubLoginEmail": email or None,
@@ -249,7 +279,7 @@ def list_club_credential_change_requests(request: Request, profile=Depends(curre
     if profile["role"] == Role.ADMIN.value and not is_student_affairs(profile):
         raise HTTPException(status_code=403, detail="Only Student Affairs can review credential change requests.")
     records = list(collection(request.app.state.db, "credential_requests").find(
-        {"status": {"$in": ["pending", "approved", "rejected", "applied"]}}
+        {"status": {"$in": ["pending", "approved", "rejected", "applied", "superseded"]}}
     ).sort("createdAt", -1).limit(100))
     populate_many(request.app.state.db, records, [
         ("clubId", "clubs", ["name"]),

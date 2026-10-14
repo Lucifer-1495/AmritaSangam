@@ -36,7 +36,7 @@ Use Python 3.10 or newer and Node.js 20.19+.
 
 ## Identity and account creation
 
-The browser sends sign-in and password-change requests to FastAPI over HTTPS. Supabase Auth validates sign-in credentials and manages passwords. After a successful sign-in, FastAPI creates a random, revocable session in MongoDB and sends its opaque identifier in a `Secure`, `HttpOnly`, `SameSite` cookie; only a hash of that identifier is stored in MongoDB. Normal API requests look up the session and profile in MongoDB and do not call Supabase. Sessions expire after 30 days, and MongoDB removes expired session records. Write requests must have the configured `CLIENT_ORIGIN`. Sign-out revokes the MongoDB session and clears the cookie.
+The browser sends sign-in and password-change request~s to FastAPI over HTTPS. Supabase Auth validates sign-in credentials and manages passwords. After a successful sign-in, FastAPI creates a random, revocable session in MongoDB and sends its opaque identifier in a `Secure`, `HttpOnly`, `SameSite` cookie; only a hash of that identifier is stored in MongoDB. Normal API requests look up the session and profile in MongoDB and do not call Supabase. Sessions expire after 30 days, and MongoDB removes expired session records. Write requests must have the configured `CLIENT_ORIGIN`. Sign-out revokes the MongoDB session and clears the cookie.
 
 Supabase Auth hashes account passwords with bcrypt. Amrita Sangam never stores plaintext passwords or password hashes in MongoDB; ICTS-issued passwords are sent directly to Supabase Auth over HTTPS.
 
@@ -58,7 +58,8 @@ Do not share or commit `.env` files. Frontend variables prefixed with `VITE_` ar
 | `MONGO_URI` | `backend/.env` | MongoDB URI. Never expose it to the browser. |
 | `SUPABASE_URL` | `backend/.env` | Supabase endpoint used by FastAPI. |
 | `SUPABASE_ANON_KEY` | `backend/.env` | Used by FastAPI for Supabase Auth login and password operations. |
-| `SUPABASE_SERVICE_ROLE_KEY` | `backend/.env` only | Privileged key used for account provisioning and deletion. |
+| `SUPABASE_SERVICE_ROLE_KEY` | `backend/.env` only | Legacy Supabase `service_role` JWT (starts with `eyJ`), required for privileged Auth user provisioning, updates, and deletion. The newer `sb_secret_` key cannot authorize Auth admin-user changes. |
+| `CLUB_CREDENTIAL_ENCRYPTION_KEY` | `backend/.env` only | Stable, private random secret used to encrypt pending club passwords. Generate it with `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"` and keep it unchanged when rotating Supabase keys. |
 | `ICTS_EMAIL` | `backend/.env` | Email mapped to the ICTS role. `SUPER_ADMIN_EMAIL` is a legacy alias. |
 | `CLIENT_ORIGIN` | `backend/.env` | Browser origin allowed by FastAPI CORS. |
 | `COOKIE_SAMESITE` | `backend/.env` | Cookie SameSite policy: `none`, `lax`, or `strict`. `none` is needed for the local HTTP frontend with the HTTPS API; use `lax` for a same-site HTTPS deployment where possible. |

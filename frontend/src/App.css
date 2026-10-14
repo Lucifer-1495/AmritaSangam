@@ -219,8 +219,9 @@
 .member-ob-toggle { display: inline-flex; align-items: center; gap: 4px; color: #777482; font-size: 8px; }.member-ob-toggle input { accent-color: #7159c9; }.member-remove { color: #a55f58; }
 .workflow-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
 .workflow-heading .section-heading { flex: 1; }
+.event-list-filters { display: flex; align-items: center; gap: 12px; }
 .workflow-filter { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; white-space: nowrap; }
-.workflow-filter select { min-height: 36px; padding: 0 28px 0 10px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); background: var(--surface); font-size: 12px; }
+.workflow-filter select, .workflow-filter input[type="date"] { min-height: 36px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; color: var(--ink); background: var(--surface); font-size: 12px; }
 .review-history { margin-top: 7px; color: var(--muted); font-size: 10px; }
 .review-history summary { width: fit-content; color: var(--portal-maroon); font-weight: 650; cursor: pointer; }
 .review-history ol { display: grid; gap: 7px; margin: 8px 0 0; padding-left: 18px; }
@@ -1183,6 +1184,7 @@ html[data-theme="dark"] .brand-wordmark > span { color: #f080a9; }
 }
 @media (max-width: 600px) {
   .workflow-heading { align-items: flex-start; flex-direction: column; }
+  .event-list-filters { flex-wrap: wrap; }
   .workflow-filter { align-self: flex-end; }
 }
 @media (prefers-reduced-motion: reduce) {

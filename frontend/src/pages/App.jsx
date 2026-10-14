@@ -247,6 +247,17 @@ function isUpcomingEvent(event, now = new Date()) {
   return !Number.isNaN(eventEnd.getTime()) && eventEnd >= now;
 }
 
+function eventOccursOnDate(event, dateValue) {
+  if (!dateValue) return true;
+  const eventStart = new Date(event.eventDate);
+  const eventEnd = new Date(event.endDate || event.eventDate);
+  const selectedDayStart = new Date(`${dateValue}T00:00:00`);
+  if ([eventStart, eventEnd, selectedDayStart].some((date) => Number.isNaN(date.getTime()))) return false;
+  const selectedDayEnd = new Date(selectedDayStart);
+  selectedDayEnd.setDate(selectedDayEnd.getDate() + 1);
+  return eventStart < selectedDayEnd && eventEnd >= selectedDayStart;
+}
+
 function toDateTimeInput(value) {
   if (!value) return '';
   const date = new Date(value);
@@ -1066,6 +1077,7 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
   const [membersError, setMembersError] = useState('');
   const [memberActionError, setMemberActionError] = useState('');
   const [workflowFilter, setWorkflowFilter] = useState('all');
+  const [eventDateFilter, setEventDateFilter] = useState('');
   const [chatClubId, setChatClubId] = useState('');
   const [chatGroup, setChatGroup] = useState('members');
   const [chatMessages, setChatMessages] = useState([]);
@@ -1380,12 +1392,11 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
     .filter((event) => event.status === 'approved' && isUpcomingEvent(event))
     .sort((first, second) => new Date(first.eventDate) - new Date(second.eventDate))
     .slice(0, 8), [data.events]);
-  const eventsVisibleToAccount = role === 'student' || profile.isClubAccount
-    ? data.events.filter(isUpcomingEvent)
-    : data.events;
-  const eventDialogEvents = role === 'student' || profile.isClubAccount
-    ? data.events.filter(isUpcomingEvent)
-    : data.events;
+  const eventsVisibleToAccount = role === 'student'
+    ? (eventDateFilter ? data.events : data.events.filter(isUpcomingEvent))
+    : profile.isClubAccount ? data.events.filter(isUpcomingEvent) : data.events;
+  const eventDialogEvents = eventsVisibleToAccount;
+  const canViewEventStatus = role !== 'student';
 
   const createRecord = async (type, values, eventToEdit = null) => {
     setBusy(true);
@@ -1817,8 +1828,8 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
 
               <div className="content-grid">
                 <section className="surface-card feature-card">
-                  <SectionHeading title="Upcoming events" subtitle="Approved events that have not ended." action="See all events" onAction={() => navigate('events')} />
-                  {featuredEvents.slice(0, 3).map((event, index) => <EventRow key={event._id} event={event} index={index} onDetails={() => setSelectedEvent(event)} />)}
+                      <SectionHeading title="Upcoming events" subtitle="Approved events that have not ended." action="See all events" onAction={() => navigate('events')} />
+                      {featuredEvents.slice(0, 3).map((event, index) => <EventRow key={event._id} event={event} index={index} showStatus={canViewEventStatus} onDetails={() => setSelectedEvent(event)} />)}
                   {!featuredEvents.length && <EmptyState title="No upcoming events" text="Approved events will appear here when they are scheduled." />}
                 </section>
                 <section className="surface-card announcement-card">
@@ -1857,9 +1868,20 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
 
           {!problem && page === 'events' && (
             <div className="surface-card list-surface">
-              <div className="workflow-heading"><SectionHeading title="Make a date with campus" subtitle="Good company is already on the calendar." /><WorkflowFilter value={workflowFilter} onChange={setWorkflowFilter} /></div>
+              <div className="workflow-heading">
+                <SectionHeading title="Make a date with campus" subtitle="Good company is already on the calendar." />
+                <div className="event-list-filters">
+                  <label className="workflow-filter">Date
+                    <input type="date" value={eventDateFilter} onChange={(event) => setEventDateFilter(event.target.value)} />
+                  </label>
+                  {canViewEventStatus && <WorkflowFilter value={workflowFilter} onChange={setWorkflowFilter} />}
+                </div>
+              </div>
               <div className="events-grid">
-              {eventsVisibleToAccount.filter((event) => statusMatchesFilter(event.status, workflowFilter)).map((event, index) => {
+              {eventsVisibleToAccount
+                .filter((event) => eventOccursOnDate(event, eventDateFilter))
+                .filter((event) => !canViewEventStatus || statusMatchesFilter(event.status, workflowFilter))
+                .map((event, index) => {
                 const clubId = event.clubId?._id || event.clubId;
                 const eventPosition = data.memberships.find((member) => (member.clubId?._id || member.clubId) === clubId);
                 const canTakeAttendance = Boolean(
@@ -1882,13 +1904,14 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
                   ? role === 'faculty_coordinator' && hasPendingMentorApproval(event, profile._id)
                   : event.status === 'student_affairs_pending' && isStudentAffairs;
                 return <div key={event._id} className="event-workflow">
-                  <EventRow event={event} index={index} canReview={canReviewEvent} needsReview={canReviewEvent} canResubmit={canSubmitClubRequest} canEdit={canEditEvent}
+                  <EventRow event={event} index={index} showStatus={canViewEventStatus} canReview={canReviewEvent} needsReview={canReviewEvent} canResubmit={canSubmitClubRequest} canEdit={canEditEvent}
                     showEdit={showClubAccountEdit} editDisabled={showClubAccountEdit && !canEditEvent}
                     onEdit={() => { setEditingEvent(event); setModal('editEvent'); }} onDetails={() => setSelectedEvent(event)} onReview={(status) => review('event', event, status)} onResubmit={() => perform(() => api(`/events/${event._id}/submit`, { method: 'PATCH' }), 'Event resubmitted to the club mentor.')} />
                   {canTakeAttendance && event.status === 'approved' && <AttendancePanel event={event} onError={setToast} />}
                 </div>;
               })}
-              {!eventsVisibleToAccount.some((event) => statusMatchesFilter(event.status, workflowFilter)) && <EmptyState title="No events in this view" text={workflowFilter === 'all' ? 'Upcoming events will show up here.' : 'Try another status filter to see more events.'} />}
+              {!eventsVisibleToAccount.some((event) => eventOccursOnDate(event, eventDateFilter)
+                && (!canViewEventStatus || statusMatchesFilter(event.status, workflowFilter))) && <EmptyState title="No events in this view" text={eventDateFilter ? 'No events are scheduled for that date.' : !canViewEventStatus || workflowFilter === 'all' ? 'Upcoming events will show up here.' : 'Try another status filter to see more events.'} />}
               </div>
             </div>
           )}
@@ -2148,6 +2171,7 @@ function Dashboard({ profile, onLogout, onProfileUpdate, theme, onToggleTheme })
         event={selectedEvent}
         events={eventDialogEvents}
         registrations={registrationByEvent}
+        showStatus={canViewEventStatus}
         onNavigate={setSelectedEvent}
         onClose={() => setSelectedEvent(null)}
         canRegister={role === 'student'}
@@ -2607,7 +2631,7 @@ function IctsDashboard({ onLogout, theme, onToggleTheme }) {
               <form className="account-create-form" onSubmit={requestClubCredentials}>
                 <label className="field-label">Club<select name="clubId" required defaultValue=""><option value="" disabled>Select a club</option>{credentialClubs.map((club) => <option key={club._id} value={club._id}>{club.name}</option>)}</select></label>
                 <label className="field-label">New shared login email<input name="clubLoginEmail" type="email" autoComplete="off" /></label>
-                <label className="field-label">New shared login password<input name="clubLoginPassword" type="password" minLength={8} maxLength={256} autoComplete="new-password" /><small>For existing logins, leave a field blank to keep its current value. First-time setup requires both email and password. Supabase Auth manages active passwords; pending changes are encrypted until approved and applied.</small></label>
+                <label className="field-label">New shared login password<input name="clubLoginPassword" type="password" minLength={8} maxLength={256} autoComplete="new-password" /><small>For existing logins, leave a field blank to keep its current value. First-time setup requires both email and password. Supabase Auth manages active passwords; pending changes are encrypted until approved and applied. Sending a replacement request supersedes the club’s previous unapplied request.</small></label>
                 {notice.text && <div className={`notice notice-${notice.type}`} role="status">{notice.text}</div>}
                 <button className="button button-primary" type="submit" disabled={busy}>Send for approval <ArrowRight size={15} /></button>
               </form>
@@ -2777,7 +2801,7 @@ function ReviewHistory({ entries }) {
   </details>;
 }
 
-function EventRow({ event, index = 0, canReview, needsReview, canResubmit, canEdit, showEdit, editDisabled, onEdit, onDetails, onReview, onResubmit }) {
+function EventRow({ event, index = 0, canReview, needsReview, canResubmit, canEdit, showEdit, editDisabled, showStatus = true, onEdit, onDetails, onReview, onResubmit }) {
   const date = event.eventDate ? new Date(event.eventDate) : null;
   const eventDate = date && !Number.isNaN(date.getTime()) ? date : null;
   const count = event.registeredCount || 0;
@@ -2788,7 +2812,7 @@ function EventRow({ event, index = 0, canReview, needsReview, canResubmit, canEd
         : <span className="event-poster-fallback"><CalendarDays size={20} /><small>CAMPUS EVENT</small><strong>{event.title}</strong></span>}
       <span className="event-poster-date">{eventDate ? eventDate.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : 'Date TBA'}</span>
     </button>
-    <div className="event-details"><div className="event-meta"><span>{event.clubId?.name || 'Campus club'}</span><span className={statusClass(event.status)}>{event.status.replaceAll('_', ' ')}</span>{needsReview && <span className="notification-inline-label">NEEDS YOUR REVIEW</span>}</div><h3>{event.title}</h3><p><CalendarDays size={13} /> {formatDate(event.eventDate, { weekday: 'short', month: 'short', day: 'numeric' })}{event.venueId?.name && <> <span>·</span> {event.venueId.name}</>}</p>{event.coHostIds?.length > 0 && <small className="event-cohosts">Co-hosted with {event.coHostIds.map((host) => host.name).join(', ')}</small>}{event.createdBy?.name && <small>Proposed by {event.createdBy.name}</small>}<ReviewHistory entries={reviewHistoryFor(event)} />{event.rejectionFeedback && <small className="rejection-feedback">Feedback: {event.rejectionFeedback}</small>}</div>
+    <div className="event-details"><div className="event-meta"><span>{event.clubId?.name || 'Campus club'}</span>{showStatus && <span className={statusClass(event.status)}>{event.status.replaceAll('_', ' ')}</span>}{needsReview && <span className="notification-inline-label">NEEDS YOUR REVIEW</span>}</div><h3>{event.title}</h3><p><CalendarDays size={13} /> {formatDate(event.eventDate, { weekday: 'short', month: 'short', day: 'numeric' })}{event.venueId?.name && <> <span>·</span> {event.venueId.name}</>}</p>{event.coHostIds?.length > 0 && <small className="event-cohosts">Co-hosted with {event.coHostIds.map((host) => host.name).join(', ')}</small>}{event.createdBy?.name && <small>Proposed by {event.createdBy.name}</small>}{showStatus && <><ReviewHistory entries={reviewHistoryFor(event)} />{event.rejectionFeedback && <small className="rejection-feedback">Feedback: {event.rejectionFeedback}</small>}</>}</div>
     <div className="event-row-action">
       <button className="text-link" type="button" onClick={onDetails}>View details <ArrowRight size={14} /></button>
       {(canEdit || showEdit) && <button className="button button-outline" type="button" disabled={editDisabled} onClick={onEdit} title={editDisabled ? 'Editing is disabled after mentor review has started.' : undefined}>Edit event</button>}
@@ -2799,7 +2823,7 @@ function EventRow({ event, index = 0, canReview, needsReview, canResubmit, canEd
   </article>;
 }
 
-function EventDetailsDialog({ event, events, registrations, onNavigate, onClose, canRegister, onRegister }) {
+function EventDetailsDialog({ event, events, registrations, onNavigate, onClose, canRegister, onRegister, showStatus = true }) {
   const [confirmation, setConfirmation] = useState('');
   const [pendingEvent, setPendingEvent] = useState(null);
   const [slideDirection, setSlideDirection] = useState(0);
@@ -2888,7 +2912,7 @@ function EventDetailsDialog({ event, events, registrations, onNavigate, onClose,
         </div>}
       </div>
       <div className="event-dialog-content">
-        <div className="event-meta"><span>{clubName}</span><span className={statusClass(slideEvent.status)}>{slideEvent.status.replaceAll('_', ' ')}</span></div>
+        <div className="event-meta"><span>{clubName}</span>{showStatus && <span className={statusClass(slideEvent.status)}>{slideEvent.status.replaceAll('_', ' ')}</span>}</div>
         <h2 id={slideEvent._id === event._id ? 'event-dialog-title' : undefined}>{slideEvent.title}</h2>
         <p className="event-dialog-description">{slideEvent.description || 'Event details will be shared by the club soon.'}</p>
         <div className="event-dialog-facts">
